@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/request_set'
 
@@ -18,7 +19,7 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
     @gda.instance_variable_set :@vendor_set, @vendor_set
   end
 
-  def with_engine_version name, version
+  def with_engine_version(name, version)
     engine               = RUBY_ENGINE if Object.const_defined? :RUBY_ENGINE
     engine_version_const = "#{Gem.ruby_engine.upcase}_VERSION"
     engine_version       = Object.const_get engine_version_const
@@ -51,22 +52,14 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
   end
 
   def test_gempspec_with_multiple_runtime_deps
-    gda = Class.new(@GDA) do
-      # implement find_gemspec so we don't need one on the FS
-      def find_gemspec name, path
-        Gem::Specification.new do |s|
-          s.name = 'foo'
-          s.version = '1.0'
-          s.add_runtime_dependency 'bar', '>= 1.6.0', '< 1.6.4'
-        end
-      end
+    save_gemspec 'foo', '1.0' do |s|
+      s.add_runtime_dependency 'bar', '>= 1.6.0', '< 1.6.4'
     end
-    instance = gda.new @set, __FILE__
-    instance.gemspec
+    @gda.gemspec
     assert_equal %w{ foo bar }.sort, @set.dependencies.map(&:name).sort
     bar = @set.dependencies.find { |d| d.name == 'bar' }
-    assert_equal [[">=", Gem::Version.create('1.6.0')],
-                  ["<", Gem::Version.create('1.6.4')]], bar.requirement.requirements
+    assert_equal [["<", Gem::Version.create('1.6.4')],
+                  [">=", Gem::Version.create('1.6.0')]], bar.requirement.requirements.sort
   end
 
   def test_gemspec_without_group
@@ -144,7 +137,11 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
   end
 
   def test_gem_git_branch
-    @gda.gem 'a', :git => 'git/a', :branch => 'other', :tag => 'v1'
+    _, err = capture_io do
+      @gda.gem 'a', :git => 'git/a', :branch => 'other', :tag => 'v1'
+    end
+    expected = "Gem dependencies file gem.deps.rb includes git reference for both ref/branch and tag but only ref/branch is used."
+    assert_match expected, err
 
     assert_equal [dep('a')], @set.dependencies
 
@@ -161,7 +158,11 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
   end
 
   def test_gem_git_ref
-    @gda.gem 'a', :git => 'git/a', :ref => 'abcd123', :branch => 'other'
+    _, err = capture_io do
+      @gda.gem 'a', :git => 'git/a', :ref => 'abcd123', :branch => 'other'
+    end
+    expected = "Gem dependencies file gem.deps.rb includes git reference for both ref and branch but only ref is used."
+    assert_match expected, err
 
     assert_equal [dep('a')], @set.dependencies
 
@@ -282,6 +283,14 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
       refute_empty set.dependencies
     end
 
+    with_engine_version 'truffleruby', '2.0.0' do
+      set = Gem::RequestSet.new
+      gda = @GDA.new set, 'gem.deps.rb'
+      gda.gem 'a', :platforms => :ruby
+
+      refute_empty set.dependencies
+    end
+
     with_engine_version 'jruby', '1.7.6' do
       set = Gem::RequestSet.new
       gda = @GDA.new set, 'gem.deps.rb'
@@ -309,6 +318,12 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
 
       assert_empty @set.dependencies
     end
+
+    with_engine_version 'truffleruby', '1.2.3' do
+      @gda.gem 'a', :platforms => :mri
+
+      assert_empty @set.dependencies
+    end
   end
 
   def test_gem_platforms_maglev
@@ -329,6 +344,22 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
     end
   ensure
     Gem.win_platform = win_platform
+  end
+
+  def test_gem_platforms_truffleruby
+    with_engine_version 'truffleruby', '1.0.0' do
+      set = Gem::RequestSet.new
+      gda = @GDA.new set, 'gem.deps.rb'
+      gda.gem 'a', :platforms => :truffleruby
+
+      refute_empty set.dependencies
+
+      set = Gem::RequestSet.new
+      gda = @GDA.new set, 'gem.deps.rb'
+      gda.gem 'a', :platforms => :maglev
+
+      assert_empty set.dependencies
+    end
   end
 
   def test_gem_platforms_multiple
@@ -470,11 +501,9 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
   end
 
   def test_gemspec
-    spec = util_spec 'a', 1, 'b' => 2
-    spec.add_development_dependency 'c', 3
-
-    open 'a.gemspec', 'w' do |io|
-      io.write spec.to_ruby_for_cache
+    save_gemspec 'a', 1 do |s|
+      s.add_dependency 'b', 2
+      s.add_development_dependency 'c', 3
     end
 
     @gda.gemspec
@@ -506,11 +535,9 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
   end
 
   def test_gemspec_development_group
-    spec = util_spec 'a', 1, 'b' => 2
-    spec.add_development_dependency 'c', 3
-
-    open 'a.gemspec', 'w' do |io|
-      io.write spec.to_ruby_for_cache
+    save_gemspec 'a', 1 do |s|
+      s.add_dependency 'b', 2
+      s.add_development_dependency 'c', 3
     end
 
     @gda.without_groups << :other
@@ -523,14 +550,12 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
   end
 
   def test_gemspec_multiple
-    open 'a.gemspec', 'w' do |io|
-      spec = util_spec 'a', 1, 'b' => 2
-      io.write spec.to_ruby_for_cache
+    save_gemspec 'a', 1 do |s|
+      s.add_dependency 'b', 2
     end
 
-    open 'b.gemspec', 'w' do |io|
-      spec = util_spec 'b', 2, 'c' => 3
-      io.write spec.to_ruby_for_cache
+    save_gemspec 'b', 2 do |s|
+      s.add_dependency 'c', 3
     end
 
     e = assert_raises ArgumentError do
@@ -541,14 +566,12 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
   end
 
   def test_gemspec_name
-    open 'a.gemspec', 'w' do |io|
-      spec = util_spec 'a', 1, 'b' => 2
-      io.write spec.to_ruby_for_cache
+    save_gemspec 'a', 1 do |s|
+      s.add_dependency 'b', 2
     end
 
-    open 'b.gemspec', 'w' do |io|
-      spec = util_spec 'b', 2, 'c' => 3
-      io.write spec.to_ruby_for_cache
+    save_gemspec 'b', 2 do |s|
+      s.add_dependency 'c', 3
     end
 
     @gda.gemspec :name => 'b'
@@ -557,10 +580,8 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
   end
 
   def test_gemspec_named
-    spec = util_spec 'a', 1, 'b' => 2
-
-    open 'other.gemspec', 'w' do |io|
-      io.write spec.to_ruby_for_cache
+    save_gemspec 'a', 1 do |s|
+      s.add_dependency 'b', 2
     end
 
     @gda.gemspec
@@ -577,12 +598,10 @@ class TestGemRequestSetGemDependencyAPI < Gem::TestCase
   end
 
   def test_gemspec_path
-    spec = util_spec 'a', 1, 'b' => 2
-
     FileUtils.mkdir 'other'
 
-    open 'other/a.gemspec', 'w' do |io|
-      io.write spec.to_ruby_for_cache
+    save_gemspec 'a', 1, 'other' do |s|
+      s.add_dependency 'b', 2
     end
 
     @gda.gemspec :path => 'other'
@@ -638,11 +657,7 @@ end
       assert_equal [dep('a'), dep('b')], @set.dependencies
       io
     end
-    tf.close! if tf.respond_to? :close!
-  end
-
-  def test_name_typo
-    assert_same @GDA, Gem::RequestSet::GemDepedencyAPI
+    tf.close!
   end
 
   def test_pin_gem_source
@@ -667,20 +682,23 @@ end
   end
 
   def test_platform_mswin
-    util_set_arch 'i686-darwin8.10.1' do
-      @gda.platform :mswin do
-        @gda.gem 'a'
+    if win_platform?
+      util_set_arch 'x86-mswin32-60' do
+        @gda.platform :mswin do
+          @gda.gem 'a'
+        end
+
+        assert_equal [dep('a')], @set.dependencies
+        refute_empty @set.dependencies
       end
+    else
+      util_set_arch 'i686-darwin8.10.1' do
+        @gda.platform :mswin do
+          @gda.gem 'a'
+        end
 
-      assert_empty @set.dependencies
-    end
-
-    util_set_arch 'x86-mswin32-60' do
-      @gda.platform :mswin do
-        @gda.gem 'a'
+        assert_empty @set.dependencies
       end
-
-      refute_empty @set.dependencies
     end
   end
 
@@ -723,26 +741,20 @@ end
   end
 
   def test_platforms
-    util_set_arch 'i686-darwin8.10.1' do
-      @gda.platforms :ruby do
-        @gda.gem 'a'
+    unless win_platform?
+      util_set_arch 'i686-darwin8.10.1' do
+        @gda.platforms :ruby do
+          @gda.gem 'a'
+        end
+
+        assert_equal [dep('a')], @set.dependencies
+
+        @gda.platforms :mswin do
+          @gda.gem 'b'
+        end
+
+        assert_equal [dep('a')], @set.dependencies
       end
-
-      assert_equal [dep('a')], @set.dependencies
-
-      @gda.platforms :mswin do
-        @gda.gem 'b'
-      end
-
-      assert_equal [dep('a')], @set.dependencies
-    end
-
-    util_set_arch 'x86-mswin32-60' do
-      @gda.platforms :mswin do
-        @gda.gem 'c'
-      end
-
-      assert_equal [dep('a'), dep('c')], @set.dependencies
     end
   end
 
@@ -756,6 +768,12 @@ end
                :engine => 'jruby', :engine_version => '1.7.6'
 
     end
+
+    with_engine_version 'truffleruby', '1.0.0-rc11' do
+      assert @gda.ruby RUBY_VERSION,
+               :engine => 'truffleruby', :engine_version => '1.0.0-rc11'
+
+    end
   end
 
   def test_ruby_engine_mismatch_engine
@@ -764,7 +782,7 @@ end
         @gda.ruby RUBY_VERSION, :engine => 'jruby', :engine_version => '1.7.4'
       end
 
-      assert_equal 'Your ruby engine is ruby, but your gem.deps.rb requires jruby',
+      assert_equal 'Your Ruby engine is ruby, but your gem.deps.rb requires jruby',
                    e.message
     end
   end
@@ -775,7 +793,7 @@ end
         @gda.ruby RUBY_VERSION, :engine => 'jruby', :engine_version => '1.7.4'
       end
 
-      assert_equal 'Your ruby engine version is jruby 1.7.6, but your gem.deps.rb requires jruby 1.7.4',
+      assert_equal 'Your Ruby engine version is jruby 1.7.6, but your gem.deps.rb requires jruby 1.7.4',
                    e.message
     end
   end
@@ -785,7 +803,7 @@ end
       @gda.ruby RUBY_VERSION, :engine => 'jruby'
     end
 
-    assert_equal 'you must specify engine_version along with the ruby engine',
+    assert_equal 'You must specify engine_version along with the Ruby engine',
                  e.message
   end
 
@@ -838,5 +856,4 @@ end
       engine
   end
 
-end
-
+end unless Gem.java_platform?

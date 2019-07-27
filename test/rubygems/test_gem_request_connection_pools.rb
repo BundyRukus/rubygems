@@ -1,14 +1,18 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/request'
 require 'timeout'
 
 class TestGemRequestConnectionPool < Gem::TestCase
+
   class FakeHttp
-    def initialize *args
+
+    def initialize(*args)
     end
 
     def start
     end
+
   end
 
   def setup
@@ -22,6 +26,28 @@ class TestGemRequestConnectionPool < Gem::TestCase
   def teardown
     Gem::Request::ConnectionPools.client = @old_client
     super
+  end
+
+  def test_to_proxy_substring
+    pools = Gem::Request::ConnectionPools.new nil, []
+
+    env_no_proxy = %w[
+      ems.example
+    ]
+
+    no_proxy = pools.send :no_proxy?, 'rubygems.example', env_no_proxy
+
+    refute no_proxy, 'mismatch'
+  end
+
+  def test_to_proxy_empty_string
+    pools = Gem::Request::ConnectionPools.new nil, []
+
+    env_no_proxy = [""]
+
+    no_proxy = pools.send :no_proxy?, 'ems.example', env_no_proxy
+
+    refute no_proxy, 'mismatch'
   end
 
   def test_checkout_same_connection
@@ -80,6 +106,14 @@ class TestGemRequestConnectionPool < Gem::TestCase
     assert_equal ['example', 80], net_http_args
   end
 
+  def test_net_http_args_ipv6
+    pools = Gem::Request::ConnectionPools.new nil, []
+
+    net_http_args = pools.send :net_http_args, URI('http://[::1]'), nil
+
+    assert_equal ["::1", 80], net_http_args
+  end
+
   def test_net_http_args_proxy
     pools = Gem::Request::ConnectionPools.new nil, []
 
@@ -108,13 +142,13 @@ class TestGemRequestConnectionPool < Gem::TestCase
 
     pool.checkout
 
-    t1 = Thread.new {
-      timeout(1) do
-        pool.checkout
+    Thread.new do
+      assert_raises(Timeout::Error) do
+        Timeout.timeout(1) do
+          pool.checkout
+        end
       end
-    }
-    assert_raises(Timeout::Error) do
-      t1.join
-    end
+    end.join
   end
+
 end

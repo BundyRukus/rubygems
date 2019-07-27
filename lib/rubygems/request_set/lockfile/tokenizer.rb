@@ -1,12 +1,16 @@
-require 'strscan'
+# frozen_string_literal: true
 require 'rubygems/request_set/lockfile/parser'
 
 class Gem::RequestSet::Lockfile::Tokenizer
-  def self.from_file file
+
+  Token = Struct.new :type, :value, :column, :line
+  EOF   = Token.new :EOF
+
+  def self.from_file(file)
     new File.read(file), file
   end
 
-  def initialize input, filename = nil, line = 0, pos = 0
+  def initialize(input, filename = nil, line = 0, pos = 0)
     @line     = line
     @line_pos = pos
     @tokens   = []
@@ -14,23 +18,23 @@ class Gem::RequestSet::Lockfile::Tokenizer
     tokenize input
   end
 
-  def make_parser set, platforms
+  def make_parser(set, platforms)
     Gem::RequestSet::Lockfile::Parser.new self, set, platforms, @filename
   end
 
   def to_a
-    @tokens
+    @tokens.map { |token| [token.type, token.value, token.column, token.line] }
   end
 
-  def skip type
-    @tokens.shift while not @tokens.empty? and peek.first == type
+  def skip(type)
+    @tokens.shift while not @tokens.empty? and peek.type == type
   end
 
   ##
   # Calculates the column (by byte) and the line of the current token based on
   # +byte_offset+.
 
-  def token_pos byte_offset # :nodoc:
+  def token_pos(byte_offset) # :nodoc:
     [byte_offset - @line_pos, @line]
   end
 
@@ -38,7 +42,7 @@ class Gem::RequestSet::Lockfile::Tokenizer
     @tokens.empty?
   end
 
-  def unshift token
+  def unshift(token)
     @tokens.unshift token
   end
 
@@ -48,12 +52,13 @@ class Gem::RequestSet::Lockfile::Tokenizer
   alias :shift :next_token
 
   def peek
-    @tokens.first || [:EOF]
+    @tokens.first || EOF
   end
 
   private
 
-  def tokenize input
+  def tokenize(input)
+    require 'strscan'
     s = StringScanner.new input
 
     until s.eos? do
@@ -61,7 +66,7 @@ class Gem::RequestSet::Lockfile::Tokenizer
 
       pos = s.pos if leading_whitespace = s.scan(/ +/)
 
-      if s.scan(/[<|=>]{7}/) then
+      if s.scan(/[<|=>]{7}/)
         message = "your #{@filename} contains merge conflict markers"
         column, line = token_pos pos
 
@@ -71,33 +76,33 @@ class Gem::RequestSet::Lockfile::Tokenizer
       @tokens <<
         case
         when s.scan(/\r?\n/) then
-          token = [:newline, nil, *token_pos(pos)]
+          token = Token.new(:newline, nil, *token_pos(pos))
           @line_pos = s.pos
           @line += 1
           token
         when s.scan(/[A-Z]+/) then
-          if leading_whitespace then
+          if leading_whitespace
             text = s.matched
             text += s.scan(/[^\s)]*/).to_s # in case of no match
-            [:text, text, *token_pos(pos)]
+            Token.new(:text, text, *token_pos(pos))
           else
-            [:section, s.matched, *token_pos(pos)]
+            Token.new(:section, s.matched, *token_pos(pos))
           end
         when s.scan(/([a-z]+):\s/) then
           s.pos -= 1 # rewind for possible newline
-          [:entry, s[1], *token_pos(pos)]
+          Token.new(:entry, s[1], *token_pos(pos))
         when s.scan(/\(/) then
-          [:l_paren, nil, *token_pos(pos)]
+          Token.new(:l_paren, nil, *token_pos(pos))
         when s.scan(/\)/) then
-          [:r_paren, nil, *token_pos(pos)]
+          Token.new(:r_paren, nil, *token_pos(pos))
         when s.scan(/<=|>=|=|~>|<|>|!=/) then
-          [:requirement, s.matched, *token_pos(pos)]
+          Token.new(:requirement, s.matched, *token_pos(pos))
         when s.scan(/,/) then
-          [:comma, nil, *token_pos(pos)]
+          Token.new(:comma, nil, *token_pos(pos))
         when s.scan(/!/) then
-          [:bang, nil, *token_pos(pos)]
+          Token.new(:bang, nil, *token_pos(pos))
         when s.scan(/[^\s),!]*/) then
-          [:text, s.matched, *token_pos(pos)]
+          Token.new(:text, s.matched, *token_pos(pos))
         else
           raise "BUG: can't create token for: #{s.string[s.pos..-1].inspect}"
         end
@@ -105,4 +110,5 @@ class Gem::RequestSet::Lockfile::Tokenizer
 
     @tokens
   end
+
 end

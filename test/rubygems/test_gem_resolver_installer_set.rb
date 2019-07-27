@@ -1,12 +1,12 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 
 class TestGemResolverInstallerSet < Gem::TestCase
 
   def test_add_always_install
     spec_fetcher do |fetcher|
-      fetcher.spec 'a', 1
-      fetcher.spec 'a', 2
-      fetcher.clear
+      fetcher.download 'a', 1
+      fetcher.download 'a', 2
     end
 
     util_gem 'a', 1
@@ -25,8 +25,8 @@ class TestGemResolverInstallerSet < Gem::TestCase
   end
 
   def test_add_always_install_errors
-    @fetcher = Gem::FakeFetcher.new
-    Gem::RemoteFetcher.fetcher = @fetcher
+    @stub_fetcher = Gem::FakeFetcher.new
+    Gem::RemoteFetcher.fetcher = @stub_fetcher
 
     set = Gem::Resolver::InstallerSet.new :both
 
@@ -39,11 +39,10 @@ class TestGemResolverInstallerSet < Gem::TestCase
 
   def test_add_always_install_platform
     spec_fetcher do |fetcher|
-      fetcher.spec 'a', 1
-      fetcher.spec 'a', 2 do |s|
+      fetcher.download 'a', 1
+      fetcher.download 'a', 2 do |s|
         s.platform = Gem::Platform.new 'x86-freebsd-9'
       end
-      fetcher.clear
     end
 
     set = Gem::Resolver::InstallerSet.new :both
@@ -139,8 +138,7 @@ class TestGemResolverInstallerSet < Gem::TestCase
 
   def test_find_all_always_install
     spec_fetcher do |fetcher|
-      fetcher.spec 'a', 2
-      fetcher.clear
+      fetcher.download 'a', 2
     end
 
     util_gem 'a', 1
@@ -156,9 +154,8 @@ class TestGemResolverInstallerSet < Gem::TestCase
 
   def test_find_all_prerelease
     spec_fetcher do |fetcher|
-      fetcher.spec 'a', '1'
-      fetcher.spec 'a', '1.a'
-      fetcher.clear
+      fetcher.download 'a', '1'
+      fetcher.download 'a', '1.a'
     end
 
     set = Gem::Resolver::InstallerSet.new :both
@@ -176,7 +173,9 @@ class TestGemResolverInstallerSet < Gem::TestCase
   def test_load_spec
     specs = spec_fetcher do |fetcher|
       fetcher.spec 'a', 2
-      fetcher.spec 'a', 2 do |s| s.platform = Gem::Platform.local end
+      fetcher.spec 'a', 2 do |s|
+        s.platform = Gem::Platform.local
+      end
     end
 
     source = Gem::Source.new @gem_repo
@@ -200,7 +199,7 @@ class TestGemResolverInstallerSet < Gem::TestCase
     def (set.remote_set).prefetch(_)
       raise "called"
     end
-    assert_equal nil, set.prefetch(nil)
+    assert_nil set.prefetch(nil)
   end
 
   def test_prerelease_equals
@@ -258,4 +257,3 @@ class TestGemResolverInstallerSet < Gem::TestCase
   end
 
 end
-

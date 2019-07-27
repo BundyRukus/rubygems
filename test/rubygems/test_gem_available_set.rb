@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/available_set'
 require 'rubygems/security'
@@ -67,7 +68,7 @@ class TestGemAvailableSet < Gem::TestCase
 
   def test_best
     a1, _ = util_gem 'a', '1'
-    a2, _  = util_gem 'a', '2'
+    a2, _ = util_gem 'a', '2'
 
     set = Gem::AvailableSet.new
     set.add a1, @source
@@ -79,7 +80,8 @@ class TestGemAvailableSet < Gem::TestCase
   end
 
   def test_remove_installed_bang
-    a1, _ = util_gem 'a', '1'
+    a1, _ = util_spec 'a', '1'
+    install_specs a1
 
     a1.activate
 
@@ -95,7 +97,7 @@ class TestGemAvailableSet < Gem::TestCase
 
   def test_sorted_normal_versions
     a1, _ = util_gem 'a', '1'
-    a2, _  = util_gem 'a', '2'
+    a2, _ = util_gem 'a', '2'
 
     set = Gem::AvailableSet.new
     set.add a1, @source
@@ -125,4 +127,5 @@ class TestGemAvailableSet < Gem::TestCase
 
     assert_equal [a3a, a2, a2a, a1, a1a], g
   end
+
 end

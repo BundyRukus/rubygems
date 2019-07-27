@@ -1,4 +1,6 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
+require 'rubygems/installer'
 
 class TestGemResolverGitSpecification < Gem::TestCase
 
@@ -61,6 +63,7 @@ class TestGemResolverGitSpecification < Gem::TestCase
   # functional test for Gem::Ext::Builder
 
   def test_install_extension
+    skip if Gem.java_platform?
     name, _, repository, = git_gem 'a', 1 do |s|
       s.extensions << 'ext/extconf.rb'
     end
@@ -68,7 +71,7 @@ class TestGemResolverGitSpecification < Gem::TestCase
     Dir.chdir 'git/a' do
       FileUtils.mkdir_p 'ext/lib'
 
-      open 'ext/extconf.rb', 'w' do |io|
+      File.open 'ext/extconf.rb', 'w' do |io|
         io.puts 'require "mkmf"'
         io.puts 'create_makefile "a"'
       end
@@ -109,4 +112,3 @@ class TestGemResolverGitSpecification < Gem::TestCase
   end
 
 end
-

@@ -1,11 +1,6 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/commands/update_command'
-
-begin
-  gem "rdoc"
-rescue Gem::LoadError
-  # ignore
-end
 
 class TestGemCommandsUpdateCommand < Gem::TestCase
 
@@ -18,11 +13,9 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     @cmd.options[:document] = []
 
     @specs = spec_fetcher do |fetcher|
-      fetcher.gem 'a', 1
-      fetcher.gem 'a', 2
-      fetcher.gem 'a', '3.a'
-
-      fetcher.clear
+      fetcher.download 'a', 1
+      fetcher.download 'a', 2
+      fetcher.download 'a', '3.a'
     end
 
     @a1_path  = @specs['a-1'].cache_file
@@ -32,10 +25,7 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute
     spec_fetcher do |fetcher|
-      fetcher.gem 'a', 2
-
-      fetcher.clear
-
+      fetcher.download 'a', 2
       fetcher.spec 'a', 1
     end
 
@@ -54,10 +44,8 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_multiple
     spec_fetcher do |fetcher|
-      fetcher.gem 'a',  2
-      fetcher.gem 'ab', 2
-
-      fetcher.clear
+      fetcher.download 'a',  2
+      fetcher.download 'ab', 2
 
       fetcher.spec 'a',  1
       fetcher.spec 'ab', 1
@@ -78,9 +66,9 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_system
     spec_fetcher do |fetcher|
-      fetcher.gem 'rubygems-update', 9 do |s| s.files = %w[setup.rb] end
-
-      fetcher.clear
+      fetcher.download 'rubygems-update', 9 do |s|
+        s.files = %w[setup.rb]
+      end
     end
 
     @cmd.options[:args]          = []
@@ -100,11 +88,9 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_system_at_latest
     spec_fetcher do |fetcher|
-      fetcher.gem 'rubygems-update', Gem::VERSION do |s|
+      fetcher.download 'rubygems-update', Gem::VERSION do |s|
         s.files = %w[setup.rb]
       end
-
-      fetcher.clear
     end
 
     @cmd.options[:args]          = []
@@ -117,16 +103,19 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     end
 
     out = @ui.output.split "\n"
-    assert_equal "Latest version currently installed. Aborting.", out.shift
+    assert_equal "Latest version already installed. Done.", out.shift
     assert_empty out
   end
 
   def test_execute_system_multiple
     spec_fetcher do |fetcher|
-      fetcher.gem 'rubygems-update', 8 do |s| s.files = %w[setup.rb] end
-      fetcher.gem 'rubygems-update', 9 do |s| s.files = %w[setup.rb] end
+      fetcher.download 'rubygems-update', 8 do |s|
+        s.files = %w[setup.rb]
+      end
 
-      fetcher.clear
+      fetcher.download 'rubygems-update', 9 do |s|
+        s.files = %w[setup.rb]
+      end
     end
 
     @cmd.options[:args]          = []
@@ -146,10 +135,13 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_system_specific
     spec_fetcher do |fetcher|
-      fetcher.gem 'rubygems-update', 8 do |s| s.files = %w[setup.rb] end
-      fetcher.gem 'rubygems-update', 9 do |s| s.files = %w[setup.rb] end
+      fetcher.download 'rubygems-update', 8 do |s|
+        s.files = %w[setup.rb]
+      end
 
-      fetcher.clear
+      fetcher.download 'rubygems-update', 9 do |s|
+        s.files = %w[setup.rb]
+      end
     end
 
     @cmd.options[:args]          = []
@@ -169,10 +161,13 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_system_specifically_to_latest_version
     spec_fetcher do |fetcher|
-      fetcher.gem 'rubygems-update', 8 do |s| s.files = %w[setup.rb] end
-      fetcher.gem 'rubygems-update', 9 do |s| s.files = %w[setup.rb] end
+      fetcher.download 'rubygems-update', 8 do |s|
+        s.files = %w[setup.rb]
+      end
 
-      fetcher.clear
+      fetcher.download 'rubygems-update', 9 do |s|
+        s.files = %w[setup.rb]
+      end
     end
 
     @cmd.options[:args]          = []
@@ -213,11 +208,9 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_dependencies
     spec_fetcher do |fetcher|
-      fetcher.gem 'a', 2, 'b' => 2, 'c' => 2
-      fetcher.gem 'b', 2
-      fetcher.gem 'c', 2
-
-      fetcher.clear
+      fetcher.download 'a', 2, 'b' => 2, 'c' => 2
+      fetcher.download 'b', 2
+      fetcher.download 'c', 2
 
       fetcher.spec 'a', 1, 'c' => '1.2'
       fetcher.spec 'c', '1.2'
@@ -241,12 +234,8 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
   end
 
   def test_execute_rdoc
-    skip if RUBY_VERSION <= "1.8.7"
     spec_fetcher do |fetcher|
-      fetcher.gem 'a', 2
-
-      fetcher.clear
-
+      fetcher.download 'a', 2
       fetcher.spec 'a', 1
     end
 
@@ -269,9 +258,7 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_named
     spec_fetcher do |fetcher|
-      fetcher.gem 'a', 2
-
-      fetcher.clear
+      fetcher.download 'a', 2
 
       fetcher.spec 'a', 1
     end
@@ -292,8 +279,7 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_named_some_up_to_date
     spec_fetcher do |fetcher|
-      fetcher.gem 'a', 2
-      fetcher.clear
+      fetcher.download 'a', 2
       fetcher.spec 'a', 1
 
       fetcher.spec 'b', 2
@@ -334,9 +320,7 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_named_up_to_date_prerelease
     spec_fetcher do |fetcher|
-      fetcher.gem 'a', '3.a'
-
-      fetcher.clear
+      fetcher.download 'a', '3.a'
 
       fetcher.gem 'a', 2
     end
@@ -376,10 +360,7 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
   def test_execute_user_install
     spec_fetcher do |fetcher|
-      fetcher.gem 'a', 2
-
-      fetcher.clear
-
+      fetcher.download 'a', 2
       fetcher.spec 'a', 1
     end
 
@@ -403,7 +384,7 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
     expected = [
       [Gem::NameTuple.new('a', v(2), Gem::Platform::RUBY),
-        Gem::Source.new(@gem_repo)],
+       Gem::Source.new(@gem_repo)],
     ]
 
     assert_equal expected, @cmd.fetch_remote_gems(specs['a-1'])
@@ -423,12 +404,15 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
     specs = spec_fetcher do |fetcher|
       fetcher.spec 'a', 1
       fetcher.spec 'a', 2
-      fetcher.spec 'a', 2 do |s| s.platform = platform end
+
+      fetcher.spec 'a', 2 do |s|
+        s.platform = platform
+      end
     end
 
     expected = [
       [Gem::NameTuple.new('a', v(2), Gem::Platform::RUBY),
-        Gem::Source.new(@gem_repo)],
+       Gem::Source.new(@gem_repo)],
     ]
 
     assert_equal expected, @cmd.fetch_remote_gems(specs['a-1'])
@@ -445,9 +429,9 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
     expected = [
       [Gem::NameTuple.new('a', v(2), Gem::Platform::RUBY),
-        Gem::Source.new(@gem_repo)],
+       Gem::Source.new(@gem_repo)],
       [Gem::NameTuple.new('a', v('3.a'), Gem::Platform::RUBY),
-        Gem::Source.new(@gem_repo)],
+       Gem::Source.new(@gem_repo)],
     ]
 
     assert_equal expected, @cmd.fetch_remote_gems(specs['a-1'])
@@ -520,24 +504,85 @@ class TestGemCommandsUpdateCommand < Gem::TestCase
 
     assert_equal '--prefix',           arguments.shift
     assert_equal Gem.prefix,           arguments.shift
-    assert_equal '--no-rdoc',          arguments.shift
-    assert_equal '--no-ri',            arguments.shift
+    assert_equal '--no-document',      arguments.shift
     assert_equal '--previous-version', arguments.shift
     assert_equal Gem::VERSION,         arguments.shift
     assert_empty arguments
   end
 
-  def test_update_rubygems_arguments_1_8_x
-    @cmd.options[:system] = '1.8.26'
+  def test_explain
+    spec_fetcher do |fetcher|
+      fetcher.download 'a', 2
+      fetcher.spec 'a', 1
+    end
 
-    arguments = @cmd.update_rubygems_arguments
+    @cmd.options[:explain] = true
+    @cmd.options[:args] = %w[a]
 
-    assert_equal '--prefix',           arguments.shift
-    assert_equal Gem.prefix,           arguments.shift
-    assert_equal '--no-rdoc',          arguments.shift
-    assert_equal '--no-ri',            arguments.shift
-    assert_empty arguments
+    use_ui @ui do
+      @cmd.execute
+    end
+
+    out = @ui.output.split "\n"
+
+    assert_equal "Gems to update:", out.shift
+    assert_equal "  a-2", out.shift
+    assert_empty out
+  end
+
+  def test_explain_platform_local
+    local = Gem::Platform.local
+    spec_fetcher do |fetcher|
+      fetcher.download 'a', 2
+
+      fetcher.download 'a', 2 do |s|
+        s.platform = local
+      end
+
+      fetcher.spec 'a', 1
+    end
+
+    @cmd.options[:explain] = true
+    @cmd.options[:args] = %w[a]
+
+    use_ui @ui do
+      @cmd.execute
+    end
+
+    out = @ui.output.split "\n"
+
+    assert_equal "Gems to update:", out.shift
+    assert_equal "  a-2-#{local}", out.shift
+    assert_empty out
+  end
+
+  def test_explain_platform_ruby
+    local = Gem::Platform.local
+    spec_fetcher do |fetcher|
+      fetcher.download 'a', 2
+
+      fetcher.download 'a', 2 do |s|
+        s.platform = local
+      end
+
+      fetcher.spec 'a', 1
+    end
+
+    # equivalent to --platform=ruby
+    Gem.platforms = [Gem::Platform::RUBY]
+
+    @cmd.options[:explain] = true
+    @cmd.options[:args] = %w[a]
+
+    use_ui @ui do
+      @cmd.execute
+    end
+
+    out = @ui.output.split "\n"
+
+    assert_equal "Gems to update:", out.shift
+    assert_equal "  a-2", out.shift
+    assert_empty out
   end
 
 end
-
