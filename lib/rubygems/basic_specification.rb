@@ -1,9 +1,10 @@
+# frozen_string_literal: true
+
 ##
 # BasicSpecification is an abstract class which implements some common code
 # used by both Specification and StubSpecification.
 
 class Gem::BasicSpecification
-
   ##
   # Allows installation of extensions for git: gems.
 
@@ -22,15 +23,23 @@ class Gem::BasicSpecification
   ##
   # The path this gemspec was loaded from.  This attribute is not persisted.
 
-  attr_reader :loaded_from
+  attr_accessor :loaded_from
 
   ##
   # Allows correct activation of git: and path: gems.
 
   attr_writer :full_gem_path # :nodoc:
 
-  def self.default_specifications_dir
-    File.join(Gem.default_dir, "specifications", "default")
+  def initialize
+    internal_init
+  end
+
+  ##
+  # The path to the gem.build_complete file within the extension install
+  # directory.
+
+  def gem_build_complete_path # :nodoc:
+    File.join extension_dir, "gem.build_complete"
   end
 
   ##
@@ -46,90 +55,125 @@ class Gem::BasicSpecification
   # eg: /usr/local/lib/ruby/gems/1.8
 
   def base_dir
-    return Gem.dir unless loaded_from
-    @base_dir ||= if default_gem? then
-                    File.dirname File.dirname File.dirname loaded_from
-                  else
-                    File.dirname File.dirname loaded_from
-                  end
+    raise NotImplementedError
   end
 
   ##
   # Return true if this spec can require +file+.
 
-  def contains_requirable_file? file
-    @contains_requirable_file ||= {}
-    @contains_requirable_file[file] ||=
-    begin
-      if instance_variable_defined?(:@ignored) then
-        return false
-      elsif missing_extensions? then
-        @ignored = true
-
-        warn "Ignoring #{full_name} because its extensions are not built.  " +
+  def contains_requirable_file?(file)
+    if ignored?
+      if platform == Gem::Platform::RUBY || Gem::Platform.local === platform
+        warn "Ignoring #{full_name} because its extensions are not built. " \
              "Try: gem pristine #{name} --version #{version}"
-        return false
       end
 
-      suffixes = Gem.suffixes
+      return false
+    end
 
-      full_require_paths.any? do |dir|
-        base = "#{dir}/#{file}"
-        suffixes.any? { |suf| File.file? "#{base}#{suf}" }
-      end
-    end ? :yes : :no
-    @contains_requirable_file[file] == :yes
+    is_soext = file.end_with?(".so", ".o")
+
+    if is_soext
+      have_file? file.delete_suffix(File.extname(file)), Gem.dynamic_library_suffixes
+    else
+      have_file? file, Gem.suffixes
+    end
+  end
+
+  ##
+  # Return true if this spec should be ignored because it's missing extensions.
+
+  def ignored?
+    return @ignored unless @ignored.nil?
+
+    @ignored = missing_extensions?
   end
 
   def default_gem?
-    loaded_from &&
-      File.dirname(loaded_from) == self.class.default_specifications_dir
+    !loaded_from.nil? &&
+      File.dirname(loaded_from) == Gem.default_specifications_dir
+  end
+
+  ##
+  # Regular gems take precedence over default gems
+
+  def default_gem_priority
+    default_gem? ? 1 : -1
+  end
+
+  ##
+  # Gems higher up in +gem_path+ take precedence
+
+  def base_dir_priority(gem_path)
+    gem_path.index(base_dir) || gem_path.size
   end
 
   ##
   # Returns full path to the directory where gem's extensions are installed.
 
   def extension_dir
-    @extension_dir ||= File.expand_path File.join(extensions_dir, full_name)
+    @extension_dir ||= File.expand_path(File.join(extensions_dir, full_name))
   end
 
   ##
   # Returns path to the extensions directory.
 
   def extensions_dir
-    @extensions_dir ||= Gem.default_ext_dir_for(base_dir) ||
-      File.join(base_dir, 'extensions', Gem::Platform.local.to_s,
+    Gem.default_ext_dir_for(base_dir) ||
+      File.join(base_dir, "extensions", Gem::Platform.local.to_s,
                 Gem.extension_api_version)
   end
 
   def find_full_gem_path # :nodoc:
-    # TODO: also, shouldn't it default to full_name if it hasn't been written?
-    path = File.expand_path File.join(gems_dir, full_name)
-    path.untaint
-    path if File.directory? path
+    File.expand_path File.join(gems_dir, full_name)
   end
 
   private :find_full_gem_path
 
   ##
   # The full path to the gem (install path + full name).
+  #
+  # TODO: This is duplicated with #gem_dir. Eventually either of them should be deprecated.
 
   def full_gem_path
-    # TODO: This is a heavily used method by gems, so we'll need
-    # to aleast just alias it to #gem_dir rather than remove it.
     @full_gem_path ||= find_full_gem_path
   end
 
   ##
-  # Returns the full name (name-version) of this Gem.  Platform information
-  # is included (name-version-platform) if it is specified and not the
+  # Returns the full name (name-version) of this Gem.
+  # Content address is included (name-version-content_address) if the gem
+  # is content-addressed (eligible and has a valid content address).
+  # Platform information is included (name-version-platform) if it is specified and not the
   # default Ruby platform.
 
   def full_name
-    if platform == Gem::Platform::RUBY or platform.nil? then
-      "#{name}-#{version}".untaint
+    if Gem::ContentAddress.content_addressed?(self)
+      "#{name}-#{version}-#{content_address}"
+    elsif platform == Gem::Platform::RUBY || platform.nil?
+      "#{name}-#{version}"
     else
-      "#{name}-#{version}-#{platform}".untaint
+      "#{name}-#{version}-#{platform}"
+    end
+  end
+
+  ##
+  # The content address of this gem, or +nil+ when it is not
+  # content-addressable.
+
+  def content_address
+    nil
+  end
+
+  ##
+  # Returns the full name of this Gem (see `Gem::BasicSpecification#full_name`).
+  # Information about where the gem is installed is also included if not
+  # installed in the default GEM_HOME.
+
+  def full_name_with_location
+    if base_dir != Gem.dir
+      "#{full_name} in #{base_dir}"
+    else
+      full_name
     end
   end
 
@@ -139,45 +183,43 @@ class Gem::BasicSpecification
 
   def full_require_paths
     @full_require_paths ||=
-    begin
-      full_paths = raw_require_paths.map do |path|
-        File.join full_gem_path, path
+      begin
+        full_paths = raw_require_paths.map do |path|
+          File.join full_gem_path, path
+        end
+
+        full_paths << extension_dir if have_extensions?
+
+        full_paths
       end
-
-      full_paths << extension_dir unless @extensions.nil? || @extensions.empty?
-
-      full_paths
-    end
   end
 
   ##
   # Full path of the target library file.
   # If the file is not in this gem, return nil.
 
-  def to_fullpath path
-    if activated? then
+  def to_fullpath(path)
+    if activated?
       @paths_map ||= {}
-      @paths_map[path] ||=
-      begin
-        fullpath = nil
-        suffixes = Gem.suffixes
-        full_require_paths.find do |dir|
-          suffixes.find do |suf|
-            File.file?(fullpath = "#{dir}/#{path}#{suf}")
-          end
-        end ? fullpath : nil
+      Gem.suffixes.each do |suf|
+        full_require_paths.each do |dir|
+          fullpath = "#{dir}/#{path}#{suf}"
+          next unless File.file?(fullpath)
+          @paths_map[path] ||= fullpath
+        end
       end
-    else
-      nil
+      @paths_map[path]
     end
   end
 
   ##
   # Returns the full path to this spec's gem directory.
   # eg: /usr/local/lib/ruby/1.8/gems/mygem-1.0
+  #
+  # TODO: This is duplicated with #full_gem_path. Eventually either of them should be deprecated.
 
   def gem_dir
-    @gem_dir ||= File.expand_path File.join(gems_dir, full_name)
+    @gem_dir ||= find_full_gem_path
   end
 
   ##
@@ -185,23 +227,14 @@ class Gem::BasicSpecification
   # gem directory. eg: /usr/local/lib/ruby/1.8/gems
 
   def gems_dir
-    # TODO: this logic seems terribly broken, but tests fail if just base_dir
-    @gems_dir ||= File.join(loaded_from && base_dir || Gem.dir, "gems")
+    raise NotImplementedError
   end
 
-  ##
-  # Set the path the Specification was loaded from. +path+ is converted to a
-  # String.
-
-  def loaded_from= path
-    @loaded_from   = path && path.to_s
-
+  def internal_init # :nodoc:
     @extension_dir = nil
-    @extensions_dir = nil
-    @full_gem_path         = nil
-    @gem_dir               = nil
-    @gems_dir              = nil
-    @base_dir              = nil
+    @full_gem_path = nil
+    @gem_dir = nil
+    @ignored = nil
   end
 
   ##
@@ -218,8 +251,15 @@ class Gem::BasicSpecification
     raise NotImplementedError
   end
 
+  def installable_on_platform?(target_platform) # :nodoc:
+    return true if [Gem::Platform::RUBY, nil, target_platform].include?(platform)
+    return true if Gem::Platform.new(platform) === target_platform
+
+    false
+  end
+
   def raw_require_paths # :nodoc:
-    Array(@require_paths)
+    raise NotImplementedError
   end
 
   ##
@@ -240,7 +280,7 @@ class Gem::BasicSpecification
   #   spec.require_path = '.'
 
   def require_paths
-    return raw_require_paths if @extensions.nil? || @extensions.empty?
+    return raw_require_paths unless have_extensions?
 
     [extension_dir].concat raw_require_paths
   end
@@ -252,8 +292,8 @@ class Gem::BasicSpecification
   def source_paths
     paths = raw_require_paths.dup
 
-    if @extensions then
-      ext_dirs = @extensions.map do |extension|
+    if have_extensions?
+      ext_dirs = extensions.map do |extension|
         extension.split(File::SEPARATOR, 2).first
       end.uniq
 
@@ -261,6 +301,28 @@ class Gem::BasicSpecification
     end
 
     paths.uniq
+  end
+
+  ##
+  # Return all files in this gem that match for +glob+.
+
+  def matches_for_glob(glob) # TODO: rename?
+    Gem::Util.glob_files_in_dir(File.join(lib_dirs, glob), full_gem_path)
+  end
+
+  ##
+  # Returns the list of plugins in this spec.
+
+  def plugins
+    matches_for_glob("rubygems#{Gem.plugin_suffix_pattern}")
+  end
+
+  ##
+  # Returns a string usable in Dir.glob to match all requirable paths
+  # for this spec.
+
+  def lib_dirs_glob
+    "#{full_gem_path}/#{lib_dirs}"
   end
 
   ##
@@ -285,5 +347,43 @@ class Gem::BasicSpecification
     raise NotImplementedError
   end
 
-end
+  def this
+    self
+  end
 
+  private
+
+  ##
+  # Returns the require_paths of this gem as a string usable in Dir.glob,
+  # relative to full_gem_path.
+
+  def lib_dirs
+    if raw_require_paths
+      if raw_require_paths.size > 1
+        "{#{raw_require_paths.join(",")}}"
+      else
+        raw_require_paths.first
+      end
+    else
+      "lib" # default value for require_paths for bundler/inline
+    end
+  end
+
+  def have_extensions?
+    !extensions.empty?
+  end
+
+  def have_file?(file, suffixes)
+    return true if raw_require_paths.any? do |path|
+      base = File.join(gems_dir, full_name, path, file)
+      suffixes.any? {|suf| File.file? base + suf }
+    end
+
+    if have_extensions?
+      base = File.join extension_dir, file
+      suffixes.any? {|suf| File.file? base + suf }
+    else
+      false
+    end
+  end
+end

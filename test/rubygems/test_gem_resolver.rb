@@ -1,19 +1,14 @@
-require 'rubygems/test_case'
+# frozen_string_literal: true
+
+require_relative "helper"
 
 class TestGemResolver < Gem::TestCase
-
-  def setup
-    super
-
-    @DR = Gem::Resolver
-  end
-
   def make_dep(name, *req)
     Gem::Dependency.new(name, *req)
   end
 
   def set(*specs)
-    source = Gem::Source.new URI @gem_repo
+    source = Gem::Source.new Gem::URI @gem_repo
 
     specs = specs.map do |spec|
       Gem::Resolver::SpecSpecification.new nil, spec, source
@@ -22,36 +17,32 @@ class TestGemResolver < Gem::TestCase
     StaticSet.new(specs)
   end
 
-  def assert_resolves_to expected, resolver
+  def assert_resolves_to(expected, resolver)
     actual = resolver.resolve
 
-    exp = expected.sort_by { |s| s.full_name }
-    act = actual.map { |a| a.spec.spec }.sort_by { |s| s.full_name }
+    exp = expected.sort_by(&:full_name)
+    act = actual.map {|a| a.spec.spec }.sort_by(&:full_name)
 
-    msg = "Set of gems was not the same: #{exp.map { |x| x.full_name}.inspect} != #{act.map { |x| x.full_name}.inspect}"
+    msg = "Set of gems was not the same: #{exp.map(&:full_name).inspect} != #{act.map(&:full_name).inspect}"
 
     assert_equal exp, act, msg
   rescue Gem::DependencyResolutionError => e
     flunk e.message
   end
 
-  def test_self_compatibility
-    assert_same Gem::Resolver, Gem::DependencyResolver
-  end
-
   def test_self_compose_sets_best_set
-    best_set = @DR::BestSet.new
+    best_set = Gem::Resolver::BestSet.new
 
-    composed = @DR.compose_sets best_set
+    composed = Gem::Resolver.compose_sets best_set
 
     assert_equal best_set, composed
   end
 
   def test_self_compose_sets_multiple
-    index_set  = @DR::IndexSet.new
-    vendor_set = @DR::VendorSet.new
+    index_set  = Gem::Resolver::IndexSet.new
+    vendor_set = Gem::Resolver::VendorSet.new
 
-    composed = @DR.compose_sets index_set, vendor_set
+    composed = Gem::Resolver.compose_sets index_set, vendor_set
 
     assert_kind_of Gem::Resolver::ComposedSet, composed
 
@@ -59,14 +50,14 @@ class TestGemResolver < Gem::TestCase
   end
 
   def test_self_compose_sets_nest
-    index_set  = @DR::IndexSet.new
-    vendor_set = @DR::VendorSet.new
+    index_set  = Gem::Resolver::IndexSet.new
+    vendor_set = Gem::Resolver::VendorSet.new
 
-    inner = @DR.compose_sets index_set, vendor_set
+    inner = Gem::Resolver.compose_sets index_set, vendor_set
 
-    current_set = @DR::CurrentSet.new
+    current_set = Gem::Resolver::CurrentSet.new
 
-    composed = @DR.compose_sets inner, current_set
+    composed = Gem::Resolver.compose_sets inner, current_set
 
     assert_kind_of Gem::Resolver::ComposedSet, composed
 
@@ -74,119 +65,59 @@ class TestGemResolver < Gem::TestCase
   end
 
   def test_self_compose_sets_nil
-    index_set  = @DR::IndexSet.new
+    index_set = Gem::Resolver::IndexSet.new
 
-    composed = @DR.compose_sets index_set, nil
+    composed = Gem::Resolver.compose_sets index_set, nil
 
     assert_same index_set, composed
 
-    e = assert_raises ArgumentError do
-      @DR.compose_sets nil
+    e = assert_raise ArgumentError do
+      Gem::Resolver.compose_sets nil
     end
 
-    assert_equal 'one set in the composition must be non-nil', e.message
+    assert_equal "one set in the composition must be non-nil", e.message
   end
 
   def test_self_compose_sets_single
-    index_set  = @DR::IndexSet.new
+    index_set = Gem::Resolver::IndexSet.new
 
-    composed = @DR.compose_sets index_set
+    composed = Gem::Resolver.compose_sets index_set
 
     assert_same index_set, composed
   end
 
-  def test_handle_conflict
-    a1 = util_spec 'a', 1
-
-    r1 = Gem::Resolver::DependencyRequest.new dep('a', '= 1'), nil
-    r2 = Gem::Resolver::DependencyRequest.new dep('a', '= 2'), nil
-    r3 = Gem::Resolver::DependencyRequest.new dep('a', '= 3'), nil
-
-    existing = Gem::Resolver::ActivationRequest.new a1, r1, false
-
-    res = Gem::Resolver.new [a1]
-
-    res.handle_conflict r2, existing
-    res.handle_conflict r2, existing
-    res.handle_conflict r3, existing
-
-    assert_equal 2, res.conflicts.length
-  end
-
-  def test_requests
-    a1 = util_spec 'a', 1, 'b' => 2
-
-    r1 = Gem::Resolver::DependencyRequest.new dep('a', '= 1'), nil
-
-    act = Gem::Resolver::ActivationRequest.new a1, r1, false
-
-    res = Gem::Resolver.new [a1]
-
-    reqs = Gem::Resolver::RequirementList.new
-
-    res.requests a1, act, reqs
-
-    assert_equal ['b (= 2)'], reqs.to_a.map { |req| req.to_s }
-  end
-
-  def test_requests_development
-    a1 = util_spec 'a', 1, 'b' => 2
-
-    spec = Gem::Resolver::SpecSpecification.new nil, a1
-    def spec.fetch_development_dependencies
-      @called = true
-    end
-
-    r1 = Gem::Resolver::DependencyRequest.new dep('a', '= 1'), nil
-
-    act = Gem::Resolver::ActivationRequest.new spec, r1, false
-
-    res = Gem::Resolver.new [act]
-    res.development = true
-
-    reqs = Gem::Resolver::RequirementList.new
-
-    res.requests spec, act, reqs
-
-    assert_equal ['b (= 2)'], reqs.to_a.map { |req| req.to_s }
-
-    assert spec.instance_variable_defined? :@called
-  end
-
-  def test_requests_ignore_dependencies
-    a1 = util_spec 'a', 1, 'b' => 2
-
-    r1 = Gem::Resolver::DependencyRequest.new dep('a', '= 1'), nil
-
-    act = Gem::Resolver::ActivationRequest.new a1, r1, false
-
-    res = Gem::Resolver.new [a1]
-    res.ignore_dependencies = true
-
-    reqs = Gem::Resolver::RequirementList.new
-
-    res.requests a1, act, reqs
-
-    assert_empty reqs
-  end
-
   def test_resolve_conservative
-    a1_spec = util_spec 'a', 1
-    a2_spec = util_spec 'a', 2 do |s|
-      s.add_dependency 'b', 2
-      s.add_dependency 'c'
-    end
-    b1_spec = util_spec 'b', 1
-    b2_spec = util_spec 'b', 2
-    c1_spec = util_spec 'c', 1 do |s| s.add_dependency 'd', 2 end
-    c2_spec = util_spec 'c', 2 do |s| s.add_dependency 'd', 2 end
-    d1_spec = util_spec 'd', 1 do |s| s.add_dependency 'e' end
-    d2_spec = util_spec 'd', 2 do |s| s.add_dependency 'e' end
-    e1_spec = util_spec 'e', 1
-    e2_spec = util_spec 'e', 2
+    a1_spec = util_spec "a", 1
 
-    a_dep = make_dep 'a', '= 2'
-    e_dep = make_dep 'e'
+    a2_spec = util_spec "a", 2 do |s|
+      s.add_dependency "b", 2
+      s.add_dependency "c"
+    end
+
+    b1_spec = util_spec "b", 1
+    b2_spec = util_spec "b", 2
+
+    c1_spec = util_spec "c", 1 do |s|
+      s.add_dependency "d", 2
+    end
+
+    c2_spec = util_spec "c", 2 do |s|
+      s.add_dependency "d", 2
+    end
+
+    d1_spec = util_spec "d", 1 do |s|
+      s.add_dependency "e"
+    end
+
+    d2_spec = util_spec "d", 2 do |s|
+      s.add_dependency "e"
+    end
+
+    e1_spec = util_spec "e", 1
+    e2_spec = util_spec "e", 2
+
+    a_dep = make_dep "a", "= 2"
+    e_dep = make_dep "e"
 
     # When requesting to install:
     # a-2, e
@@ -198,7 +129,7 @@ class TestGemResolver < Gem::TestCase
 
     # With the following gems already installed:
     # a-1, b-1, c-1, e-1
-    res.skip_gems = {'a'=>[a1_spec], 'b'=>[b1_spec], 'c'=>[c1_spec], 'e'=>[e1_spec]}
+    res.skip_gems = { "a" => [a1_spec], "b" => [b1_spec], "c" => [c1_spec], "e" => [e1_spec] }
 
     # Make sure the following gems end up getting used/installed/upgraded:
     # a-2 (upgraded)
@@ -209,12 +140,46 @@ class TestGemResolver < Gem::TestCase
     assert_resolves_to [a2_spec, b2_spec, c1_spec, d2_spec, e1_spec], res
   end
 
-  def test_resolve_development
-    a_spec = util_spec 'a', 1 do |s| s.add_development_dependency 'b' end
-    b_spec = util_spec 'b', 1 do |s| s.add_development_dependency 'c' end
-    c_spec = util_spec 'c', 1
+  def test_conservative_upgrades_when_installed_blocked
+    # Conservative mode floats the installed (skip) version to the front but
+    # keeps newer versions selectable. When the installed version cannot be
+    # used because its own dependency is unsatisfiable, the solver backtracks
+    # to a newer version instead of failing. This intentionally diverges from
+    # Molinillo (which hard-restricted to skip versions and raised) and reaches
+    # Bundler's upgrade-over-raise outcome. See the comment in
+    # Gem::Resolver#all_versions_for.
+    a1_spec = util_spec "a", 1 do |s|
+      s.add_dependency "b", ">= 2"
+    end
+    a2_spec = util_spec "a", 2 do |s|
+      s.add_dependency "b", ">= 1"
+    end
+    b1_spec = util_spec "b", 1
 
-    a_dep = make_dep 'a', '= 1'
+    # b-2 is intentionally absent, so a-1's `b >= 2` cannot be satisfied.
+    deps = [make_dep("a", ">= 1")]
+    s = set a1_spec, a2_spec, b1_spec
+
+    res = Gem::Resolver.new deps, s
+    # a-1 is already installed and satisfies `a >= 1`, so conservative mode
+    # prefers it - but it is blocked by the missing b-2, forcing an upgrade.
+    res.skip_gems = { "a" => [a1_spec] }
+
+    assert_resolves_to [a2_spec, b1_spec], res
+  end
+
+  def test_resolve_development
+    a_spec = util_spec "a", 1 do |s|
+      s.add_development_dependency "b"
+    end
+
+    b_spec = util_spec "b", 1 do |s|
+      s.add_development_dependency "c"
+    end
+
+    c_spec = util_spec "c", 1
+
+    a_dep = make_dep "a", "= 1"
 
     deps = [a_dep]
 
@@ -228,18 +193,24 @@ class TestGemResolver < Gem::TestCase
   end
 
   def test_resolve_development_shallow
-    a_spec = util_spec 'a', 1 do |s|
-      s.add_development_dependency 'b'
-      s.add_runtime_dependency 'd'
+    a_spec = util_spec "a", 1 do |s|
+      s.add_development_dependency "b"
+      s.add_runtime_dependency "d"
     end
 
-    b_spec = util_spec 'b', 1 do |s| s.add_development_dependency 'c' end
-    c_spec = util_spec 'c', 1
+    b_spec = util_spec "b", 1 do |s|
+      s.add_development_dependency "c"
+    end
 
-    d_spec = util_spec 'd', 1 do |s| s.add_development_dependency 'e' end
-    e_spec = util_spec 'e', 1
+    c_spec = util_spec "c", 1
 
-    a_dep = make_dep 'a', '= 1'
+    d_spec = util_spec "d", 1 do |s|
+      s.add_development_dependency "e"
+    end
+
+    e_spec = util_spec "e", 1
+
+    a_dep = make_dep "a", "= 1"
 
     deps = [a_dep]
 
@@ -257,19 +228,19 @@ class TestGemResolver < Gem::TestCase
     @fetcher = Gem::FakeFetcher.new
     Gem::RemoteFetcher.fetcher = @fetcher
 
-    a_dep = make_dep 'a', '= 1'
+    a_dep = make_dep "a", "= 1"
 
     res = Gem::Resolver.new [a_dep], Gem::Resolver::IndexSet.new
 
-    e = assert_raises Gem::UnsatisfiableDepedencyError do
+    e = assert_raise Gem::UnsatisfiableDependencyError do
       res.resolve
     end
 
     refute_empty e.errors
   end
 
-  def test_no_overlap_specificly
-    a = util_spec "a", '1'
+  def test_no_overlap_specifically
+    a = util_spec "a", "1"
     b = util_spec "b", "1"
 
     ad = make_dep "a", "= 1"
@@ -285,7 +256,7 @@ class TestGemResolver < Gem::TestCase
   end
 
   def test_pulls_in_dependencies
-    a = util_spec "a", '1'
+    a = util_spec "a", "1"
     b = util_spec "b", "1", "c" => "= 1"
     c = util_spec "c", "1"
 
@@ -302,8 +273,8 @@ class TestGemResolver < Gem::TestCase
   end
 
   def test_picks_highest_version
-    a1 = util_spec "a", '1'
-    a2 = util_spec "a", '2'
+    a1 = util_spec "a", "1"
+    a2 = util_spec "a", "2"
 
     s = set(a1, a2)
 
@@ -316,13 +287,18 @@ class TestGemResolver < Gem::TestCase
 
   def test_picks_best_platform
     is      = Gem::Resolver::IndexSpecification
-    unknown = Gem::Platform.new 'unknown'
-    a2_p1   = a3_p2 = nil
+    unknown = Gem::Platform.new "unknown"
 
     spec_fetcher do |fetcher|
-              fetcher.spec 'a', 2
-      a2_p1 = fetcher.spec 'a', 2 do |s| s.platform = Gem::Platform.local end
-      a3_p2 = fetcher.spec 'a', 3 do |s| s.platform = unknown end
+      fetcher.spec "a", 2
+
+      fetcher.spec "a", 2 do |s|
+        s.platform = Gem::Platform.local
+      end
+
+      fetcher.spec "a", 3 do |s|
+        s.platform = unknown
+      end
     end
 
     v2 = v(2)
@@ -331,9 +307,9 @@ class TestGemResolver < Gem::TestCase
 
     s = set
 
-    a2    = is.new s, 'a', v2, source, Gem::Platform::RUBY
-    a2_p1 = is.new s, 'a', v2, source, Gem::Platform.local.to_s
-    a3_p2 = is.new s, 'a', v3, source, unknown
+    a2    = is.new s, "a", v2, source, Gem::Platform::RUBY
+    a2_p1 = is.new s, "a", v2, source, Gem::Platform.local.to_s
+    a3_p2 = is.new s, "a", v3, source, unknown
 
     s.add a3_p2
     s.add a2_p1
@@ -344,6 +320,211 @@ class TestGemResolver < Gem::TestCase
     res = Gem::Resolver.new([ad], s)
 
     assert_resolves_to [a2_p1.spec], res
+  end
+
+  def test_prefers_content_addressed_gem_for_same_platform
+    ca_spec = util_spec "a", "1"
+    spec = util_spec "a", "1"
+
+    ca_spec.platform = Gem::Platform.local
+    ca_spec.content_address = "abc1234567"
+    spec.platform = Gem::Platform.local
+
+    s = set(spec, ca_spec)
+    dependency = make_dep "a"
+    resolver = Gem::Resolver.new([dependency], s)
+    assert_resolves_to [ca_spec], resolver
+  end
+
+  def test_prefers_compatible_content_addressed_gem_over_more_specific_platform
+    util_set_arch "arm64-darwin-27"
+    current_abi = Gem.ruby_abi
+    util_pin_ruby_to_abi current_abi
+
+    ca_spec = util_spec "a", "1"
+    fat_spec = util_spec "a", "1"
+
+    ca_spec.platform = "arm64-darwin"
+    ca_spec.required_ruby_version = "~> #{current_abi}.0"
+    ca_spec.content_address = "abc1234567"
+    fat_spec.platform = "arm64-darwin-27"
+
+    s = set(fat_spec, ca_spec)
+    dependency = make_dep "a"
+    resolver = Gem::Resolver.new([dependency], s)
+    assert_resolves_to [ca_spec], resolver
+  ensure
+    util_restore_RUBY_VERSION
+  end
+
+  def test_prefers_more_specific_platform_over_content_addressed_gem_for_another_ruby
+    util_set_arch "arm64-darwin-27"
+
+    ca_spec = util_spec "a", "1"
+    fat_spec = util_spec "a", "1"
+
+    ca_spec.platform = "arm64-darwin"
+    ca_spec.required_ruby_version = ">= 999"
+    ca_spec.content_address = "abc1234567"
+    fat_spec.platform = "arm64-darwin-27"
+
+    s = set(fat_spec, ca_spec)
+    dependency = make_dep "a"
+    resolver = Gem::Resolver.new([dependency], s)
+    assert_resolves_to [fat_spec], resolver
+  end
+
+  def test_falls_back_to_non_content_addressable_when_content_addressed_gem_requires_other_rubygems_version
+    ca_spec = util_spec "a", "1"
+    non_content_addressable_spec = util_spec "a", "1"
+
+    ca_spec.platform = Gem::Platform.local
+    ca_spec.content_address = "abc1234567"
+    ca_spec.required_rubygems_version = ">= 999"
+    non_content_addressable_spec.platform = Gem::Platform.local
+
+    s = set(non_content_addressable_spec, ca_spec)
+    dependency = make_dep "a"
+    resolver = Gem::Resolver.new([dependency], s)
+    assert_resolves_to [non_content_addressable_spec], resolver
+  end
+
+  def test_falls_back_to_source_when_content_addressed_gem_requires_other_ruby
+    ca_spec = util_spec "a", "1"
+    source_spec = util_spec "a", "1"
+
+    ca_spec.platform = Gem::Platform.local
+    ca_spec.content_address = "abc1234567"
+    ca_spec.required_ruby_version = ">= 999"
+    source_spec.platform = Gem::Platform::RUBY
+
+    s = set(source_spec, ca_spec)
+    dependency = make_dep "a"
+    resolver = Gem::Resolver.new([dependency], s)
+    assert_resolves_to [source_spec], resolver
+  end
+
+  def test_falls_back_to_non_content_addressable_before_source_when_content_addressed_gem_requires_other_ruby
+    ca_spec = util_spec "a", "1"
+    non_content_addressable_spec = util_spec "a", "1"
+    source_spec = util_spec "a", "1"
+
+    ca_spec.platform = Gem::Platform.local
+    ca_spec.content_address = "abc1234567"
+    ca_spec.required_ruby_version = ">= 999"
+    non_content_addressable_spec.platform = Gem::Platform.local
+    source_spec.platform = Gem::Platform::RUBY
+
+    s = set(source_spec, non_content_addressable_spec, ca_spec)
+    dependency = make_dep "a"
+    resolver = Gem::Resolver.new([dependency], s)
+    assert_resolves_to [non_content_addressable_spec], resolver
+  end
+
+  def test_prefers_compatible_content_addressed_gem_when_multiple_abis_available
+    current_abi = Gem.ruby_abi
+    util_pin_ruby_to_abi current_abi
+
+    ca_compatible = util_spec "a", "1"
+    ca_incompatible = util_spec "a", "1"
+
+    ca_compatible.platform = Gem::Platform.local
+    ca_compatible.content_address = "abc1234567"
+    ca_compatible.required_ruby_version = "~> #{current_abi}.0"
+    ca_incompatible.platform = Gem::Platform.local
+    ca_incompatible.content_address = "def1234567"
+    ca_incompatible.required_ruby_version = "~> 999.0.0"
+
+    s = set(ca_incompatible, ca_compatible)
+    dependency = make_dep "a"
+    resolver = Gem::Resolver.new([dependency], s)
+    assert_resolves_to [ca_compatible], resolver
+  ensure
+    util_restore_RUBY_VERSION
+  end
+
+  def test_raises_when_only_content_addressed_gem_is_incompatible
+    ca_spec = util_spec "a", "1"
+
+    ca_spec.platform = Gem::Platform.local
+    ca_spec.content_address = "abc1234567"
+    ca_spec.required_ruby_version = "~> 999.0.0"
+
+    s = set(ca_spec)
+    dependency = make_dep "a"
+    resolver = Gem::Resolver.new([dependency], s)
+
+    assert_raise Gem::DependencyResolutionError do
+      resolver.resolve
+    end
+  end
+
+  def test_does_not_pick_musl_variants_on_non_musl_linux
+    util_set_arch "aarch64-linux" do
+      is = Gem::Resolver::IndexSpecification
+
+      linux_musl = Gem::Platform.new("aarch64-linux-musl")
+
+      spec_fetcher do |fetcher|
+        fetcher.spec "libv8-node", "15.14.0.1" do |s|
+          s.platform = Gem::Platform.local
+        end
+
+        fetcher.spec "libv8-node", "15.14.0.1" do |s|
+          s.platform = linux_musl
+        end
+      end
+
+      v15 = v("15.14.0.1")
+      source = Gem::Source.new @gem_repo
+
+      s = set
+
+      v15_linux = is.new s, "libv8-node", v15, source, Gem::Platform.local.to_s
+      v15_linux_musl = is.new s, "libv8-node", v15, source, linux_musl.to_s
+
+      s.add v15_linux
+      s.add v15_linux_musl
+
+      ad = make_dep "libv8-node", "= 15.14.0.1"
+
+      res = Gem::Resolver.new([ad], s)
+
+      assert_resolves_to [v15_linux.spec], res
+    end
+  end
+
+  def test_pick_generic_linux_variants_on_musl_linux
+    util_set_arch "aarch64-linux-musl" do
+      is = Gem::Resolver::IndexSpecification
+
+      linux = Gem::Platform.new("aarch64-linux")
+
+      spec_fetcher do |fetcher|
+        fetcher.spec "libv8-node", "15.14.0.1" do |s|
+          s.platform = linux
+        end
+
+        fetcher.spec "libv8-node", "15.14.0.1"
+      end
+
+      v15 = v("15.14.0.1")
+      source = Gem::Source.new @gem_repo
+
+      s = set
+
+      v15_ruby = is.new s, "libv8-node", v15, source, Gem::Platform::RUBY
+      v15_linux = is.new s, "libv8-node", v15, source, linux.to_s
+
+      s.add v15_linux
+      s.add v15_ruby
+
+      ad = make_dep "libv8-node", "= 15.14.0.1"
+
+      res = Gem::Resolver.new([ad], s)
+
+      assert_resolves_to [v15_linux.spec], res
+    end
   end
 
   def test_only_returns_spec_once
@@ -434,23 +615,14 @@ class TestGemResolver < Gem::TestCase
 
     r = Gem::Resolver.new([ad, bd], s)
 
-    e = assert_raises Gem::DependencyResolutionError do
+    e = assert_raise Gem::DependencyResolutionError do
       r.resolve
     end
 
-    deps = [make_dep("c", "= 1"), make_dep("c", "= 2")]
-    assert_equal deps, e.conflicting_dependencies
-
-    con = e.conflict
-
-    act = con.activated
-    assert_equal "c-2", act.spec.full_name
-
-    parent = act.parent
-    assert_equal "b-1", parent.spec.full_name
-
-    act = con.requester
-    assert_equal "a-1", act.spec.full_name
+    assert_nil e.conflict
+    assert_match(/your request/, e.message)
+    assert_match(/a depends on c/, e.message)
+    assert_match(/b depends on c/, e.message)
   end
 
   def test_raises_when_a_gem_is_missing
@@ -458,7 +630,7 @@ class TestGemResolver < Gem::TestCase
 
     r = Gem::Resolver.new([ad], set)
 
-    e = assert_raises Gem::UnsatisfiableDepedencyError do
+    e = assert_raise Gem::UnsatisfiableDependencyError do
       r.resolve
     end
 
@@ -475,7 +647,7 @@ class TestGemResolver < Gem::TestCase
 
     r = Gem::Resolver.new([ad], set(a1))
 
-    e = assert_raises Gem::UnsatisfiableDepedencyError do
+    e = assert_raise Gem::UnsatisfiableDependencyError do
       r.resolve
     end
 
@@ -488,7 +660,7 @@ class TestGemResolver < Gem::TestCase
 
     r = Gem::Resolver.new([ad], set(a1))
 
-    e = assert_raises Gem::UnsatisfiableDepedencyError do
+    e = assert_raise Gem::UnsatisfiableDependencyError do
       r.resolve
     end
 
@@ -498,19 +670,18 @@ class TestGemResolver < Gem::TestCase
 
   def test_raises_and_reports_an_implicit_request_properly
     a1 = util_spec "a", "1" do |s|
-      s.add_runtime_dependency 'b', '= 2'
+      s.add_dependency "b", "= 2"
     end
 
     ad = make_dep "a", "= 1"
 
     r = Gem::Resolver.new([ad], set(a1))
 
-    e = assert_raises Gem::UnsatisfiableDepedencyError do
+    e = assert_raise Gem::DependencyResolutionError do
       r.resolve
     end
 
-    assert_equal "Unable to resolve dependency: 'a (= 1)' requires 'b (= 2)'",
-                 e.message
+    assert_match(/depends on b = 2 which could not be found in any repository/, e.message)
   end
 
   def test_raises_when_possibles_are_exhausted
@@ -528,22 +699,13 @@ class TestGemResolver < Gem::TestCase
 
     r = Gem::Resolver.new([ad, bd], s)
 
-    e = assert_raises Gem::DependencyResolutionError do
+    e = assert_raise Gem::DependencyResolutionError do
       r.resolve
     end
 
-    dependency = e.conflict.dependency
-
-    assert_equal 'a', dependency.name
-    assert_equal req('>= 0'), dependency.requirement
-
-    activated = e.conflict.activated
-    assert_equal 'c-1', activated.full_name
-
-    assert_equal dep('c', '= 1'), activated.request.dependency
-
-    assert_equal [dep('c', '>= 2'), dep('c', '= 1')],
-                 e.conflict.conflicting_dependencies
+    assert_nil e.conflict
+    assert_match(/a depends on c/, e.message)
+    assert_match(/b depends on c/, e.message)
   end
 
   def test_keeps_resolving_after_seeing_satisfied_dep
@@ -600,42 +762,42 @@ class TestGemResolver < Gem::TestCase
 
     r = Gem::Resolver.new([d1, d2, d3], s)
 
-    assert_raises Gem::DependencyResolutionError do
+    assert_raise Gem::DependencyResolutionError do
       r.resolve
     end
   end
 
   def test_resolve_conflict
-    a1 = util_spec 'a', 1
-    a2 = util_spec 'a', 2
+    a1 = util_spec "a", 1
+    a2 = util_spec "a", 2
 
-    b2 = util_spec 'b', 2, 'a' => '~> 2.0'
+    b2 = util_spec "b", 2, "a" => "~> 2.0"
 
     s = set a1, a2, b2
 
-    a_dep = dep 'a', '~> 1.0'
-    b_dep = dep 'b'
+    a_dep = dep "a", "~> 1.0"
+    b_dep = dep "b"
 
     r = Gem::Resolver.new [a_dep, b_dep], s
 
-    assert_raises Gem::DependencyResolutionError do
+    assert_raise Gem::DependencyResolutionError do
       r.resolve
     end
   end
 
   def test_resolve_bug_699
-    a1 = util_spec 'a', '1', 'b' => '= 2',
-                             'c' => '~> 1.0.3'
+    a1 = util_spec "a", "1", "b" => "= 2",
+                             "c" => "~> 1.0.3"
 
-    b1 = util_spec 'b', '2', 'c' => '~> 1.0'
+    b1 = util_spec "b", "2", "c" => "~> 1.0"
 
-    c1 = util_spec 'c', '1.0.9'
-    c2 = util_spec 'c', '1.1.0'
-    c3 = util_spec 'c', '1.2.0'
+    c1 = util_spec "c", "1.0.9"
+    c2 = util_spec "c", "1.1.0"
+    c3 = util_spec "c", "1.2.0"
 
     s = set a1, b1, c1, c2, c3
 
-    a_dep = dep 'a', '= 1'
+    a_dep = dep "a", "= 1"
 
     r = Gem::Resolver.new [a_dep], s
 
@@ -643,16 +805,16 @@ class TestGemResolver < Gem::TestCase
   end
 
   def test_resolve_rollback
-    a1 = util_spec 'a', 1
-    a2 = util_spec 'a', 2
+    a1 = util_spec "a", 1
+    a2 = util_spec "a", 2
 
-    b1 = util_spec 'b', 1, 'a' => '~> 1.0'
-    b2 = util_spec 'b', 2, 'a' => '~> 2.0'
+    b1 = util_spec "b", 1, "a" => "~> 1.0"
+    b2 = util_spec "b", 2, "a" => "~> 2.0"
 
     s = set a1, a2, b1, b2
 
-    a_dep = dep 'a', '~> 1.0'
-    b_dep = dep 'b'
+    a_dep = dep "a", "~> 1.0"
+    b_dep = dep "b"
 
     r = Gem::Resolver.new [a_dep, b_dep], s
 
@@ -663,7 +825,6 @@ class TestGemResolver < Gem::TestCase
   # activemerchant 1.5.0
   # activesupport 2.3.5, 2.3.4
   # Activemerchant needs activesupport >= 2.3.2. When you require activemerchant, it will activate the latest version that meets that requirement which is 2.3.5. Actionmailer on the other hand needs activesupport = 2.3.4. When rubygems tries to activate activesupport 2.3.4, it will raise an error.
-
 
   def test_simple_activesupport_problem
     sup1  = util_spec "activesupport", "2.3.4"
@@ -683,12 +844,12 @@ class TestGemResolver < Gem::TestCase
   end
 
   def test_second_level_backout
-    b1 = new_spec "b", "1", { "c" => ">= 1" }, "lib/b.rb"
-    b2 = new_spec "b", "2", { "c" => ">= 2" }, "lib/b.rb"
-    c1 = new_spec "c", "1"
-    c2 = new_spec "c", "2"
-    d1 = new_spec "d", "1", { "c" => "< 2" },  "lib/d.rb"
-    d2 = new_spec "d", "2", { "c" => "< 2" },  "lib/d.rb"
+    b1 = util_spec "b", "1", { "c" => ">= 1" }, "lib/b.rb"
+    b2 = util_spec "b", "2", { "c" => ">= 2" }, "lib/b.rb"
+    c1 = util_spec "c", "1"
+    c2 = util_spec "c", "2"
+    d1 = util_spec "d", "1", { "c" => "< 2" },  "lib/d.rb"
+    d2 = util_spec "d", "2", { "c" => "< 2" },  "lib/d.rb"
 
     s = set(b1, b2, c1, c2, d1, d2)
 
@@ -700,16 +861,102 @@ class TestGemResolver < Gem::TestCase
     assert_resolves_to [b1, c1, d2], r
   end
 
+  def test_picks_highest_version_across_sources
+    source_a = Gem::Source.new "http://example.com/a"
+    source_b = Gem::Source.new "http://example.com/b"
+    source_c = Gem::Source.new "http://example.com/c"
+
+    spec_a_1 = util_spec "some-dep", "0.0.1"
+    spec_a_2 = util_spec "some-dep", "1.0.0"
+    spec_b_1 = util_spec "some-dep", "0.0.1"
+    spec_b_2 = util_spec "some-dep", "0.0.2"
+    spec_c_1 = util_spec "some-dep", "0.1.0"
+
+    set = StaticSet.new [
+      Gem::Resolver::SpecSpecification.new(nil, spec_b_1, source_b),
+      Gem::Resolver::SpecSpecification.new(nil, spec_b_2, source_b),
+      Gem::Resolver::SpecSpecification.new(nil, spec_c_1, source_c),
+      Gem::Resolver::SpecSpecification.new(nil, spec_a_2, source_a),
+      Gem::Resolver::SpecSpecification.new(nil, spec_a_1, source_a),
+    ]
+
+    dependency = make_dep "some-dep", "> 0"
+
+    resolver = Gem::Resolver.new [dependency], set
+
+    assert_resolves_to [spec_a_2], resolver
+  end
+
+  def test_same_version_prefers_earlier_source
+    source_a = Gem::Source.new "http://example.com/a"
+    source_b = Gem::Source.new "http://example.com/b"
+
+    spec_a = util_spec "some-dep", "1.0.0"
+    spec_b = util_spec "some-dep", "1.0.0"
+
+    set = StaticSet.new [
+      Gem::Resolver::SpecSpecification.new(nil, spec_a, source_a),
+      Gem::Resolver::SpecSpecification.new(nil, spec_b, source_b),
+    ]
+
+    resolver = Gem::Resolver.new [make_dep("some-dep", "> 0")], set
+    result = resolver.resolve
+
+    assert_equal source_a, result.first.spec.source
+  end
+
+  def test_same_version_prefers_earlier_source_when_order_flipped
+    source_a = Gem::Source.new "http://example.com/a"
+    source_b = Gem::Source.new "http://example.com/b"
+
+    spec_a = util_spec "some-dep", "1.0.0"
+    spec_b = util_spec "some-dep", "1.0.0"
+
+    set = StaticSet.new [
+      Gem::Resolver::SpecSpecification.new(nil, spec_b, source_b),
+      Gem::Resolver::SpecSpecification.new(nil, spec_a, source_a),
+    ]
+
+    resolver = Gem::Resolver.new [make_dep("some-dep", "> 0")], set
+    result = resolver.resolve
+
+    assert_equal source_b, result.first.spec.source
+  end
+
   def test_select_local_platforms
     r = Gem::Resolver.new nil, nil
 
-    a1    = util_spec 'a', 1
-    a1_p1 = util_spec 'a', 1 do |s| s.platform = Gem::Platform.local end
-    a1_p2 = util_spec 'a', 1 do |s| s.platform = 'unknown'           end
+    a1 = util_spec "a", 1
+
+    a1_p1 = util_spec "a", 1 do |s|
+      s.platform = Gem::Platform.local
+    end
+
+    a1_p2 = util_spec "a", 1 do |s|
+      s.platform = "unknown"
+    end
 
     selected = r.select_local_platforms [a1, a1_p1, a1_p2]
 
     assert_equal [a1, a1_p1], selected
+  end
+
+  def test_search_for_local_platform_partial_string_match
+    a1 = util_spec "a", 1
+
+    a1_p1 = util_spec "a", 1 do |s|
+      s.platform = Gem::Platform.local.os
+    end
+
+    a1_p2 = util_spec "a", 1 do |s|
+      s.platform = "unknown"
+    end
+
+    s = set(a1_p1, a1_p2, a1)
+    d = [make_dep("a")]
+    r = Gem::Resolver.new(d, s)
+
+    assert_resolves_to [a1_p1], r
   end
 
   def test_raises_and_explains_when_platform_prevents_install
@@ -721,7 +968,7 @@ class TestGemResolver < Gem::TestCase
 
     r = Gem::Resolver.new([ad], set(a1))
 
-    e = assert_raises Gem::UnsatisfiableDepedencyError do
+    e = assert_raise Gem::UnsatisfiableDependencyError do
       r.resolve
     end
 
@@ -729,5 +976,337 @@ class TestGemResolver < Gem::TestCase
                  e.message
   end
 
-end
+  def test_resolve_prerelease_not_considered_when_stable_exists
+    # a-1.0 depends on b ~> 2.0 - only b-2.0.pre satisfies that, but
+    # b also has a stable version (1.0), so prereleases are filtered out.
+    # The resolver must fail, not silently use b-2.0.pre during propagation.
+    a_stable = util_spec "a", "1.0" do |s|
+      s.add_dependency "b", "~> 2.0"
+    end
 
+    b_stable = util_spec "b", "1.0"
+    b_pre = util_spec "b", "2.0.pre"
+
+    s = set(a_stable, b_stable, b_pre)
+
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+
+    assert_raise Gem::DependencyResolutionError do
+      r.resolve
+    end
+  end
+
+  def test_resolve_prerelease_considered_when_enabled
+    a_stable = util_spec "a", "1.0" do |s|
+      s.add_dependency "b", ">= 1.0"
+    end
+
+    b_pre = util_spec "b", "2.0.pre"
+
+    s = set(a_stable, b_pre)
+    s.prerelease = true
+
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+
+    assert_resolves_to [a_stable, b_pre], r
+  end
+
+  def test_resolve_prerelease_used_when_no_stable_versions_exist
+    a_stable = util_spec "a", "1.0" do |s|
+      s.add_dependency "b", ">= 1.0"
+    end
+
+    b_pre = util_spec "b", "2.0.pre"
+    b_other_pre = util_spec "b", "1.0.pre"
+
+    s = set(a_stable, b_pre, b_other_pre)
+
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+
+    assert_resolves_to [a_stable, b_pre], r
+  end
+
+  def test_resolve_prerelease_required_by_exact_requirement
+    # A root dep with an exact prerelease version must resolve to that
+    # version even when stable versions of the same gem are in the set.
+    # Gem.finish_resolve hits this: it imports loaded_specs as exact-version
+    # deps, so the currently-activated prerelease bundler becomes a root dep.
+    a_stable = util_spec "a", "1.0"
+    a_pre = util_spec "a", "2.0.pre"
+
+    s = set(a_stable, a_pre)
+
+    ad = make_dep "a", "= 2.0.pre"
+    r = Gem::Resolver.new([ad], s)
+
+    assert_resolves_to [a_pre], r
+  end
+
+  def test_resolve_transitive_prerelease_required_by_exact_requirement
+    # A transitive dep with an exact prerelease version must resolve to that
+    # version even when stable versions of the same gem are in the set.
+    # The gate on prereleases lives in versions_for and is per-constraint:
+    # `= 2.0.pre` carries a prerelease bound, so prereleases are admitted for
+    # this range even though the global prerelease flag is off.
+    a = util_spec "a", "1.0" do |s|
+      s.add_dependency "b", "= 2.0.pre"
+    end
+
+    b_stable = util_spec "b", "1.0"
+    b_pre = util_spec "b", "2.0.pre"
+
+    s = set(a, b_stable, b_pre)
+
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+
+    assert_resolves_to [a, b_pre], r
+  end
+
+  def test_error_includes_platform_hint_when_specs_exist_for_other_platforms
+    a = util_spec "a", "1.0" do |s|
+      s.add_dependency "b", ">= 1.0"
+    end
+
+    b_foreign = util_spec "b", "1.0" do |s|
+      s.platform = "java"
+    end
+
+    s = set(a, b_foreign)
+
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+
+    e = assert_raise Gem::DependencyResolutionError do
+      r.resolve
+    end
+
+    assert_match(/could not be found in any repository/, e.message)
+    assert_match(/b-1.0-java/, e.message)
+  end
+
+  def test_error_includes_ruby_version_hint_when_filtered
+    a = util_spec "a", "1.0" do |s|
+      s.add_dependency "b", ">= 1.0"
+    end
+
+    b = util_spec "b", "1.0" do |s|
+      s.required_ruby_version = ">= 999.0"
+    end
+
+    s = set(a, b)
+
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+
+    e = assert_raise Gem::DependencyResolutionError do
+      r.resolve
+    end
+
+    assert_match(/requires Ruby/, e.message)
+    assert_match(/you have/, e.message)
+  end
+
+  def test_root_gem_incompatible_ruby_version_names_ruby_requirement
+    # A requested (root) gem available only for an incompatible Ruby version
+    # flows through the solver to a DependencyResolutionError whose message
+    # names the Ruby requirement. This matches Bundler (which models Ruby as a
+    # synthetic dependency and reports a solve failure) and is clearer than the
+    # platform-oriented UnsatisfiableDependencyError. Contrast the foreign-
+    # *platform* case (test_raises_and_explains_when_platform_prevents_install),
+    # which is genuinely "not found" and does raise UnsatisfiableDependencyError.
+    a = util_spec "a", "1.0" do |s|
+      s.required_ruby_version = ">= 999.0"
+    end
+
+    ad = make_dep "a", "= 1.0"
+    r = Gem::Resolver.new([ad], set(a))
+
+    e = assert_raise Gem::DependencyResolutionError do
+      r.resolve
+    end
+
+    assert_match(/requires Ruby >= 999.0/, e.message)
+  end
+
+  def test_self_dependency_does_not_crash
+    a = util_spec "a", "1.0" do |s|
+      s.add_dependency "a"
+    end
+
+    s = set(a)
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+
+    assert_resolves_to [a], r
+  end
+
+  def test_contradictory_root_requirements_give_clear_error
+    a1 = util_spec "a", "1"
+    a2 = util_spec "a", "2"
+
+    s = set(a1, a2)
+    r = Gem::Resolver.new([make_dep("a", "= 1"), make_dep("a", "= 2")], s)
+
+    e = assert_raise Gem::DependencyResolutionError do
+      r.resolve
+    end
+
+    assert_match(/contradictory/, e.message)
+    refute_match(/unknown package/, e.message)
+  end
+
+  def test_empty_range_transitive_dep_does_not_say_unknown
+    a = util_spec "a", "1.0" do |s|
+      s.add_dependency "b", "> 2", "< 1"
+    end
+
+    b = util_spec "b", "1.5"
+
+    s = set(a, b)
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+
+    e = assert_raise Gem::DependencyResolutionError do
+      r.resolve
+    end
+
+    assert_match(/contradictory/, e.message)
+    refute_match(/unknown package/, e.message)
+  end
+
+  def test_error_hints_about_prerelease_when_filtered
+    a = util_spec "a", "1.0" do |s|
+      s.add_dependency "b", "~> 2.0"
+    end
+
+    b_stable = util_spec "b", "1.0"
+    b_pre = util_spec "b", "2.0.pre"
+
+    s = set(a, b_stable, b_pre)
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+
+    e = assert_raise Gem::DependencyResolutionError do
+      r.resolve
+    end
+
+    assert_match(/pre-release/, e.message)
+    assert_match(/--prerelease/, e.message)
+  end
+
+  def test_soft_missing_skips_dep_with_wrong_version
+    a = util_spec "a", "1.0" do |s|
+      s.add_dependency "b", ">= 2.0"
+    end
+
+    b = util_spec "b", "1.0"
+
+    s = set(a, b)
+    ad = make_dep "a"
+    r = Gem::Resolver.new([ad], s)
+    r.soft_missing = true
+
+    # b exists but only 1.0, which doesn't satisfy >= 2.0.
+    # With soft_missing (--force), the dep should be skipped.
+    assert_resolves_to [a], r
+  end
+
+  def test_backtracks_to_clean_sibling_when_higher_version_has_missing_dep
+    a1 = util_spec "a", "1"
+    a2 = util_spec "a", "2" do |s|
+      s.add_dependency "zzz", ">= 1"
+    end
+
+    r = Gem::Resolver.new([make_dep("a")], set(a1, a2))
+
+    # 'zzz' has zero specs anywhere, so a-2 is unusable, but a-1 is clean
+    # and resolution must backtrack to it rather than declaring every
+    # version of 'a' invalid.
+    assert_resolves_to [a1], r
+  end
+
+  def test_backtracks_over_band_of_bad_high_versions_to_clean_lower
+    a1 = util_spec "a", "1"
+    a2 = util_spec "a", "2" do |s|
+      s.add_dependency "zzz", ">= 1"
+    end
+    a3 = util_spec "a", "3" do |s|
+      s.add_dependency "zzz", ">= 1"
+    end
+
+    r = Gem::Resolver.new([make_dep("a")], set(a1, a2, a3))
+
+    # Only the a-2..a-3 band shares the missing 'zzz' dep and should be
+    # eliminated; band scoping is load-bearing here, not just sibling
+    # presence.
+    assert_resolves_to [a1], r
+  end
+
+  def test_backtracks_when_one_of_several_deps_is_missing
+    good = util_spec "good", "1"
+    a1 = util_spec "a", "1" do |s|
+      s.add_dependency "good", ">= 1"
+    end
+    a2 = util_spec "a", "2" do |s|
+      s.add_dependency "good", ">= 1"
+      s.add_dependency "zzz", ">= 1"
+    end
+
+    r = Gem::Resolver.new([make_dep("a")], set(a1, a2, good))
+
+    # Only a-2, which carries the missing 'zzz' dep, is eliminated; the
+    # per-dep check inside a multi-dep version must not poison a-1.
+    assert_resolves_to [a1, good], r
+  end
+
+  def test_fails_when_every_version_depends_on_missing_package
+    a1 = util_spec "a", "1" do |s|
+      s.add_dependency "zzz", ">= 1"
+    end
+    a2 = util_spec "a", "2" do |s|
+      s.add_dependency "zzz", ">= 1"
+    end
+
+    r = Gem::Resolver.new([make_dep("a")], set(a1, a2))
+
+    e = assert_raise Gem::DependencyResolutionError do
+      r.resolve
+    end
+
+    assert_match(/every version of a depends on zzz >= 1 which could not be found in any repository/, e.message)
+  end
+
+  def test_resolves_when_only_lowest_version_has_missing_dep
+    a1 = util_spec "a", "1" do |s|
+      s.add_dependency "zzz", ">= 1"
+    end
+    a2 = util_spec "a", "2"
+
+    r = Gem::Resolver.new([make_dep("a")], set(a1, a2))
+
+    # a-2 is preferred/tried first, so this is already green; it guards
+    # against the bug being re-introduced in an order-sensitive way.
+    assert_resolves_to [a2], r
+  end
+
+  def test_filtered_platform_dep_lets_clean_sibling_backtrack
+    a1 = util_spec "a", "1"
+    a2 = util_spec "a", "2" do |s|
+      s.add_dependency "b", ">= 1.0"
+    end
+    b_java = util_spec "b", "1.0" do |s|
+      s.platform = "java"
+    end
+
+    r = Gem::Resolver.new([make_dep("a")], set(a1, a2, b_java))
+
+    # 'b' EXISTS in the unfiltered specs but is platform-filtered, so a-2
+    # is unusable via NoVersions (not InvalidDependency). Resolution must
+    # backtrack to the clean a-1 rather than eliminating it.
+    assert_resolves_to [a1], r
+  end
+end

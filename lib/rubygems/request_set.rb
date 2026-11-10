@@ -1,10 +1,13 @@
-require 'tsort'
+# frozen_string_literal: true
+
+require_relative "cooldown"
+require_relative "vendored_tsort"
 
 ##
 # A RequestSet groups a request to activate a set of dependencies.
 #
-#   nokogiri = Gem::Dependency.new 'nokogiri', '~> 1.6'
-#   pg = Gem::Dependency.new 'pg', '~> 0.14'
+#   nokogiri = Gem::Dependency.new 'nokogiri', '>= 1.6'
+#   pg = Gem::Dependency.new 'pg', '>= 0.14'
 #
 #   set = Gem::RequestSet.new nokogiri, pg
 #
@@ -14,13 +17,17 @@ require 'tsort'
 #   #=> ["nokogiri-1.6.0", "mini_portile-0.5.1", "pg-0.17.0"]
 
 class Gem::RequestSet
-
-  include TSort
+  include Gem::TSort
 
   ##
   # Array of gems to install even if already installed
 
   attr_accessor :always_install
+
+  ##
+  # The Gem::Cooldown applied to release candidates, if any.
+
+  attr_accessor :cooldown
 
   attr_reader :dependencies
 
@@ -77,19 +84,25 @@ class Gem::RequestSet
   attr_reader :vendor_set # :nodoc:
 
   ##
+  # The set of source gems imported via load_gemdeps.
+
+  attr_reader :source_set
+
+  ##
   # Creates a RequestSet for a list of Gem::Dependency objects, +deps+.  You
   # can then #resolve and #install the resolved list of dependencies.
   #
-  #   nokogiri = Gem::Dependency.new 'nokogiri', '~> 1.6'
-  #   pg = Gem::Dependency.new 'pg', '~> 0.14'
+  #   nokogiri = Gem::Dependency.new 'nokogiri', '>= 1.6'
+  #   pg = Gem::Dependency.new 'pg', '>= 0.14'
   #
   #   set = Gem::RequestSet.new nokogiri, pg
 
-  def initialize *deps
+  def initialize(*deps)
     @dependencies = deps
 
     @always_install      = []
     @conservative        = false
+    @cooldown            = nil
     @dependency_names    = {}
     @development         = false
     @development_shallow = false
@@ -102,9 +115,10 @@ class Gem::RequestSet
     @requests            = []
     @sets                = []
     @soft_missing        = false
-    @sorted              = nil
+    @sorted_requests     = nil
     @specs               = nil
     @vendor_set          = nil
+    @source_set          = nil
 
     yield self if block_given?
   end
@@ -112,8 +126,8 @@ class Gem::RequestSet
   ##
   # Declare that a gem of name +name+ with +reqs+ requirements is needed.
 
-  def gem name, *reqs
-    if dep = @dependency_names[name] then
+  def gem(name, *reqs)
+    if dep = @dependency_names[name]
       dep.requirement.concat reqs
     else
       dep = Gem::Dependency.new name, *reqs
@@ -125,7 +139,7 @@ class Gem::RequestSet
   ##
   # Add +deps+ Gem::Dependency objects to the set.
 
-  def import deps
+  def import(deps)
     @dependencies.concat deps
   end
 
@@ -136,57 +150,70 @@ class Gem::RequestSet
   # The +installer+ will be +nil+ if a gem matching the request was already
   # installed.
 
-  def install options, &block # :yields: request, installer
+  def install(options, &block) # :yields: request, installer
     if dir = options[:install_dir]
       requests = install_into dir, false, options, &block
       return requests
     end
 
-    cache_dir = options[:cache_dir] || Gem.dir
     @prerelease = options[:prerelease]
 
     requests = []
+    download_queue = Thread::Queue.new
 
+    # Create a thread-safe list of gems to download
     sorted_requests.each do |req|
-      if req.installed? then
-        req.spec.spec.build_extensions
+      download_queue << req
+    end
 
-        if @always_install.none? { |spec| spec == req.spec.spec } then
-          yield req, nil if block_given?
-          next
+    # Create N threads in a pool, have them download all the gems
+    threads = Array.new(Gem.configuration.concurrent_downloads) do
+      # When a thread pops this item, it knows to stop running. The symbol
+      # is queued here so that there will be one symbol per thread.
+      download_queue << :stop
+
+      Thread.new do
+        # The pop method will block waiting for items, so the only way
+        # to stop a thread from running is to provide a final item that
+        # means the thread should stop.
+        while req = download_queue.pop
+          break if req == :stop
+          req.spec.download options unless req.installed?
         end
       end
-
-      path = req.download cache_dir
-
-      inst = Gem::Installer.new path, options
-
-      yield req, inst if block_given?
-
-      requests << inst.install
     end
 
-    requests
-  ensure
-    raise if $!
+    # Wait for all the downloads to finish before continuing
+    threads.each(&:value)
+
+    # Install requested gems after they have been downloaded
+    sorted_requests.each do |req|
+      if req.installed? && @always_install.none? {|spec| spec == req.spec.spec }
+        req.spec.spec.build_extensions unless options[:build_extension] == false
+        yield req, nil if block_given?
+        next
+      end
+
+      spec =
+        begin
+          req.spec.install options do |installer|
+            yield req, installer if block_given?
+          end
+        rescue Gem::RuntimeRequirementNotMetError => e
+          suggestion = "There are no versions of #{req.request} compatible with your Ruby & RubyGems"
+          suggestion += ". Maybe try installing an older version of the gem you're looking for?" unless @always_install.include?(req.spec.spec)
+          e.suggestion = suggestion
+          raise
+        end
+
+      requests << spec
+    end
+
     return requests if options[:gemdeps]
 
-    specs = requests.map do |request|
-      case request
-      when Gem::Resolver::ActivationRequest then
-        request.spec.spec
-      else
-        request
-      end
-    end
+    install_hooks requests, options
 
-    require 'rubygems/dependency_installer'
-    inst = Gem::DependencyInstaller.new options
-    inst.installed_gems.replace specs
-
-    Gem.done_installing_hooks.each do |hook|
-      hook.call inst, specs
-    end unless Gem.done_installing_hooks.empty?
+    requests
   end
 
   ##
@@ -196,13 +223,14 @@ class Gem::RequestSet
   # If +:without_groups+ is given in the +options+, those groups in the gem
   # dependencies file are not used.  See Gem::Installer for other +options+.
 
-  def install_from_gemdeps options, &block
+  def install_from_gemdeps(options, &block)
     gemdeps = options[:gemdeps]
 
     @install_dir = options[:install_dir] || Gem.dir
     @prerelease  = options[:prerelease]
     @remote      = options[:domain] != :local
     @conservative = true if options[:conservative]
+    @cooldown = Gem::Cooldown.from_options options
 
     gem_deps_api = load_gemdeps gemdeps, options[:without_groups], true
 
@@ -214,14 +242,10 @@ class Gem::RequestSet
       sorted_requests.each do |spec|
         puts "  #{spec.full_name}"
       end
-
-      if Gem.configuration.really_verbose
-        @resolver.stats.display
-      end
     else
       installed = install options, &block
 
-      if options.fetch :lock, true then
+      if options.fetch :lock, true
         lockfile =
           Gem::RequestSet::Lockfile.build self, gemdeps, gem_deps_api.dependencies
         lockfile.write
@@ -231,11 +255,12 @@ class Gem::RequestSet
     end
   end
 
-  def install_into dir, force = true, options = {}
-    gem_home, ENV['GEM_HOME'] = ENV['GEM_HOME'], dir
+  def install_into(dir, force = true, options = {})
+    gem_home = ENV["GEM_HOME"]
+    ENV["GEM_HOME"] = dir
 
     existing = force ? [] : specs_in(dir)
-    existing.delete_if { |s| @always_install.include? s }
+    existing.delete_if {|s| @always_install.include? s }
 
     dir = File.expand_path dir
 
@@ -249,7 +274,7 @@ class Gem::RequestSet
     sorted_requests.each do |request|
       spec = request.spec
 
-      if existing.find { |s| s.full_name == spec.full_name } then
+      if existing.find {|s| s.full_name == spec.full_name }
         yield request, nil if block_given?
         next
       end
@@ -261,26 +286,48 @@ class Gem::RequestSet
       installed << request
     end
 
+    install_hooks installed, options
+
     installed
   ensure
-    ENV['GEM_HOME'] = gem_home
+    ENV["GEM_HOME"] = gem_home
+  end
+
+  ##
+  # Call hooks on installed gems
+
+  def install_hooks(requests, options)
+    specs = requests.map do |request|
+      case request
+      when Gem::Resolver::ActivationRequest then
+        request.spec.spec
+      else
+        request
+      end
+    end
+
+    require_relative "dependency_installer"
+    inst = Gem::DependencyInstaller.new options
+    inst.installed_gems.replace specs
+
+    Gem.done_installing_hooks.each do |hook|
+      hook.call inst, specs
+    end unless Gem.done_installing_hooks.empty?
   end
 
   ##
   # Load a dependency management file.
 
-  def load_gemdeps path, without_groups = [], installing = false
+  def load_gemdeps(path, without_groups = [], installing = false)
     @git_set    = Gem::Resolver::GitSet.new
     @vendor_set = Gem::Resolver::VendorSet.new
+    @source_set = Gem::Resolver::SourceSet.new
 
     @git_set.root_dir = @install_dir
 
-    lock_file = "#{File.expand_path(path)}.lock".untaint
-    begin
-      tokenizer = Gem::RequestSet::Lockfile::Tokenizer.from_file lock_file
-      parser = tokenizer.make_parser self, []
-      parser.parse
-    rescue Errno::ENOENT
+    lock_file = "#{File.expand_path(path)}.lock"
+    if File.exist?(lock_file)
+      load_lockfile lock_file
     end
 
     gf = Gem::RequestSet::GemDependencyAPI.new self, path
@@ -289,33 +336,118 @@ class Gem::RequestSet
     gf.load
   end
 
-  def pretty_print q # :nodoc:
-    q.group 2, '[RequestSet:', ']' do
+  def load_lockfile(lock_file) # :nodoc:
+    require "bundler"
+    require "bundler/lockfile_parser"
+
+    # Bundler::Source::Path resolves relative `remote:` paths against
+    # Bundler.root, which raises when there is no Gemfile in the working
+    # directory. Anchor it to the lockfile's directory so PATH sections in a
+    # `gem install -g` lockfile can be parsed without a Bundler environment.
+    previous_root = Bundler.instance_variable_get(:@root)
+    Bundler.instance_variable_set(:@root, Pathname.new(File.expand_path(File.dirname(lock_file))))
+    root_swapped = true
+
+    # A PLUGIN SOURCE section otherwise sends Bundler::Plugin.from_lock looking
+    # for the plugin that handles it, which loads and runs that plugin's
+    # `plugins.rb`. Nothing here can use a plugin source anyway, so borrow the
+    # flag Bundler itself uses to keep lockfile parsing inert.
+    previous_gemfile_parse = Bundler::Plugin.instance_variable_get(:@gemfile_parse)
+    Bundler::Plugin.instance_variable_set(:@gemfile_parse, true)
+    gemfile_parse_swapped = true
+
+    parser = Bundler::LockfileParser.new(File.read(lock_file), lockfile_path: lock_file)
+
+    locked_versions = {}
+
+    parser.specs.group_by(&:source).each do |source, specs|
+      case source
+      when Bundler::Source::Rubygems
+        # Bundler::Source::Rubygems stores remotes in reverse of the lockfile
+        # order (Bundler::Source::Rubygems#to_lock reverses them back), so
+        # restore the lockfile order here.
+        remotes = source.remotes.reverse.map {|remote| Gem::Source.new(remote.to_s) }
+        remotes << Gem::Source.new(Gem::DEFAULT_HOST) if remotes.empty?
+        lock_set = Gem::Resolver::LockSet.new(remotes)
+        specs.each do |spec|
+          added = lock_set.add(spec.name, spec.version.to_s, spec.platform)
+          locked_versions[spec.name] ||= spec.version
+          spec.dependencies.each do |dep|
+            added.each {|s| s.add_dependency dep }
+          end
+        end
+        @sets << lock_set
+      when Bundler::Source::Git
+        git_set = Gem::Resolver::GitSet.new
+        git_set.root_dir = @install_dir
+        specs.each do |spec|
+          git_spec = git_set.add_git_spec(
+            spec.name,
+            spec.version.to_s,
+            source.uri.to_s,
+            source.revision,
+            source.submodules || false
+          )
+          locked_versions[spec.name] ||= spec.version
+          spec.dependencies.each {|dep| git_spec.add_dependency dep }
+        end
+        @sets << git_set
+      when Bundler::Source::Path
+        vendor_set = Gem::Resolver::VendorSet.new
+        specs.each do |spec|
+          loaded = vendor_set.add_vendor_gem(spec.name, source.path.to_s)
+          locked_versions[spec.name] ||= loaded.version
+          spec.dependencies.each {|dep| loaded.dependencies << dep }
+        end
+        @sets << vendor_set
+      end
+    end
+
+    parser.dependencies.each_value do |dep|
+      requirements = dep.requirement.as_list
+
+      # A dependency the lockfile ties to a source replaces whatever it asks
+      # for with the version that source resolved, the way the parser this
+      # replaced did. For a PATH section that is the version of the gemspec on
+      # disk, not the one the lockfile records.
+      if dep.source && (version = locked_versions[dep.name])
+        requirements = [version]
+      end
+
+      gem dep.name, *requirements
+    end
+  ensure
+    Bundler.instance_variable_set(:@root, previous_root) if root_swapped
+    Bundler::Plugin.instance_variable_set(:@gemfile_parse, previous_gemfile_parse) if gemfile_parse_swapped
+  end
+
+  def pretty_print(q) # :nodoc:
+    q.group 2, "[RequestSet:", "]" do
       q.breakable
 
-      if @remote then
-        q.text 'remote'
+      if @remote
+        q.text "remote"
         q.breakable
       end
 
-      if @prerelease then
-        q.text 'prerelease'
+      if @prerelease
+        q.text "prerelease"
         q.breakable
       end
 
-      if @development_shallow then
-        q.text 'shallow development'
+      if @development_shallow
+        q.text "shallow development"
         q.breakable
-      elsif @development then
-        q.text 'development'
+      elsif @development
+        q.text "development"
         q.breakable
       end
 
-      if @soft_missing then
-        q.text 'soft missing'
+      if @soft_missing
+        q.text "soft missing"
       end
 
-      q.group 2, '[dependencies:', ']' do
+      q.group 2, "[dependencies:", "]" do
         q.breakable
         @dependencies.map do |dep|
           q.text dep.to_s
@@ -324,10 +456,10 @@ class Gem::RequestSet
       end
 
       q.breakable
-      q.text 'sets:'
+      q.text "sets:"
 
       q.breakable
-      q.pp @sets.map { |set| set.class }
+      q.pp @sets.map(&:class)
     end
   end
 
@@ -335,16 +467,18 @@ class Gem::RequestSet
   # Resolve the requested dependencies and return an Array of Specification
   # objects to be activated.
 
-  def resolve set = Gem::Resolver::BestSet.new
+  def resolve(set = Gem::Resolver::BestSet.new)
     @sets << set
     @sets << @git_set
     @sets << @vendor_set
+    @sets << @source_set
 
     set = Gem::Resolver.compose_sets(*@sets)
     set.remote = @remote
     set.prerelease = @prerelease
 
     resolver = Gem::Resolver.new @dependencies, set
+    resolver.cooldown            = @cooldown
     resolver.development         = @development
     resolver.development_shallow = @development_shallow
     resolver.ignore_dependencies = @ignore_dependencies
@@ -376,33 +510,35 @@ class Gem::RequestSet
   end
 
   def sorted_requests
-    @sorted ||= strongly_connected_components.flatten
+    @sorted_requests ||= strongly_connected_components.flatten
   end
 
   def specs
-    @specs ||= @requests.map { |r| r.full_spec }
+    @specs ||= @requests.map(&:full_spec)
   end
 
-  def specs_in dir
-    Dir["#{dir}/specifications/*.gemspec"].map do |g|
-      Gem::Specification.load g
+  def specs_in(dir)
+    Gem::SpecificationRecord.dirs_from([dir]).flat_map do |spec_dir|
+      Gem::Util.glob_files_in_dir("*.gemspec", spec_dir).map do |g|
+        Gem::Specification.load g
+      end
     end
   end
 
-  def tsort_each_node &block # :nodoc:
+  def tsort_each_node(&block) # :nodoc:
     @requests.each(&block)
   end
 
-  def tsort_each_child node # :nodoc:
+  def tsort_each_child(node) # :nodoc:
     node.spec.dependencies.each do |dep|
-      next if dep.type == :development and not @development
+      next if dep.type == :development && !@development
 
-      match = @requests.find { |r|
-        dep.match? r.spec.name, r.spec.version, @prerelease
-      }
+      match = @requests.find do |r|
+        dep.match?(r.spec.name, r.spec.version, r.spec.is_a?(Gem::Resolver::InstalledSpecification) || @prerelease)
+      end
 
-      unless match then
-        next if dep.type == :development and @development_shallow
+      unless match
+        next if dep.type == :development && @development_shallow
         next if @soft_missing
         raise Gem::DependencyError,
               "Unresolved dependency found during sorting - #{dep} (requested by #{node.spec.full_name})"
@@ -411,9 +547,7 @@ class Gem::RequestSet
       yield match
     end
   end
-
 end
 
-require 'rubygems/request_set/gem_dependency_api'
-require 'rubygems/request_set/lockfile'
-require 'rubygems/request_set/lockfile/tokenizer'
+require_relative "request_set/gem_dependency_api"
+require_relative "request_set/lockfile"

@@ -1,20 +1,25 @@
+# frozen_string_literal: true
+
 ##
 # This module contains various utility methods as module methods.
 
 module Gem::Util
-
-  @silent_mutex = nil
-
   ##
   # Zlib::GzipReader wrapper that unzips +data+.
 
   def self.gunzip(data)
-    require 'zlib'
-    require 'rubygems/util/stringio'
-    data = Gem::StringSource.new data
+    require "zlib"
+    require "stringio"
+    data = StringIO.new(data, "r")
 
-    unzipped = Zlib::GzipReader.new(data).read
-    unzipped.force_encoding Encoding::BINARY if Object.const_defined? :Encoding
+    gzip_reader = begin
+                    Zlib::GzipReader.new(data)
+                  rescue Zlib::GzipFile::Error => e
+                    raise e.class, e.inspect, e.backtrace
+                  end
+
+    unzipped = gzip_reader.read
+    unzipped.force_encoding Encoding::BINARY
     unzipped
   end
 
@@ -22,12 +27,14 @@ module Gem::Util
   # Zlib::GzipWriter wrapper that zips +data+.
 
   def self.gzip(data)
-    require 'zlib'
-    require 'rubygems/util/stringio'
-    zipped = Gem::StringSink.new
-    zipped.set_encoding Encoding::BINARY if Object.const_defined? :Encoding
+    require "zlib"
+    require "stringio"
+    zipped = StringIO.new(String.new, "w")
+    zipped.set_encoding Encoding::BINARY
 
-    Zlib::GzipWriter.wrap zipped do |io| io.write data end
+    Zlib::GzipWriter.wrap zipped do |io|
+      io.write data
+    end
 
     zipped.string
   end
@@ -36,99 +43,83 @@ module Gem::Util
   # A Zlib::Inflate#inflate wrapper
 
   def self.inflate(data)
-    require 'zlib'
+    require "zlib"
     Zlib::Inflate.inflate data
   end
 
   ##
-  # This calls IO.popen where it accepts an array for a +command+ (Ruby 1.9+)
-  # and implements an IO.popen-like behavior where it does not accept an array
-  # for a command.
+  # This calls IO.popen and reads the result
 
-  def self.popen *command
+  def self.popen(*command)
     IO.popen command, &:read
-  rescue TypeError # ruby 1.8 only supports string command
-    r, w = IO.pipe
-
-    pid = fork do
-      STDIN.close
-      STDOUT.reopen w
-
-      exec(*command)
-    end
-
-    w.close
-
-    begin
-      return r.read
-    ensure
-      Process.wait pid
-    end
-  end
-
-  NULL_DEVICE = defined?(IO::NULL) ? IO::NULL : Gem.win_platform? ? 'NUL' : '/dev/null'
-
-  ##
-  # Invokes system, but silences all output.
-
-  def self.silent_system *command
-    opt = {:out => NULL_DEVICE, :err => [:child, :out]}
-    if Hash === command.last
-      opt.update(command.last)
-      cmds = command[0...-1]
-    else
-      cmds = command.dup
-    end
-    return system(*(cmds << opt))
-  rescue TypeError
-    require 'thread'
-
-    @silent_mutex ||= Mutex.new
-
-    null_device = NULL_DEVICE
-
-    @silent_mutex.synchronize do
-      begin
-        stdout = STDOUT.dup
-        stderr = STDERR.dup
-
-        STDOUT.reopen null_device, 'w'
-        STDERR.reopen null_device, 'w'
-
-        return system(*command)
-      ensure
-        STDOUT.reopen stdout
-        STDERR.reopen stderr
-        stdout.close
-        stderr.close
-      end
-    end
   end
 
   ##
   # Enumerates the parents of +directory+.
 
-  def self.traverse_parents directory
+  def self.traverse_parents(directory, &block)
     return enum_for __method__, directory unless block_given?
 
     here = File.expand_path directory
-    start = here
-
-    Dir.chdir start
-
-    begin
-      loop do
-        yield here
-
-        Dir.chdir '..'
-
-        return if Dir.pwd == here # toplevel
-
-        here = Dir.pwd
+    loop do
+      begin
+        Dir.chdir here, &block
+      rescue StandardError
+        Errno::EACCES
       end
-    ensure
-      Dir.chdir start
+
+      new_here = File.expand_path("..", here)
+      return if new_here == here # toplevel
+      here = new_here
     end
   end
 
+  ##
+  # Globs for entries matching +glob+ inside of +base_path+, returning
+  # absolute paths to the matching files and directories. Unlike a plain
+  # Dir.glob with an interpolated path, glob metacharacters in +base_path+
+  # are not treated as part of the pattern. Matched entries are joined to
+  # +base_path+ literally, so an entry starting with `~` is not expanded
+  # into a home directory, and no other normalization is applied to them.
+
+  def self.glob_files_in_dir(glob, base_path)
+    expanded_path = nil
+    Dir.glob(glob, base: base_path).map! do |f|
+      # File.join instead of File.expand_path, so that matched entries
+      # starting with `~` are not expanded into the home directory
+      File.join(expanded_path ||= File.expand_path(base_path), f)
+    end
+  end
+
+  ##
+  # Duplicates +obj+ without Marshal, which cannot resolve Gem:: constants from
+  # the root box under Ruby::Box (RUBY_BOX=1). Hashes and arrays are copied
+  # recursively, anything else with a plain +dup+, so an object's internals stay
+  # shared with the original, as are hash keys. Shared references are not
+  # preserved, and a cyclic +obj+ raises SystemStackError.
+
+  def self.deep_dup(obj) # :nodoc:
+    case obj
+    when Hash then obj.to_h {|k, v| [k, deep_dup(v)] }
+    when Array then obj.map {|e| deep_dup(e) }
+    else
+      begin
+        obj.dup
+      rescue TypeError
+        obj
+      end
+    end
+  end
+
+  ##
+  # Corrects +path+ (usually returned by `Gem::URI.parse().path` on Windows), that
+  # comes with a leading slash.
+
+  def self.correct_for_windows_path(path)
+    if path[0].chr == "/" && path[1].chr.match?(/[a-z]/i) && path[2].chr == ":"
+      path[1..-1]
+    else
+      path
+    end
+  end
 end
